@@ -18,7 +18,9 @@
       <div class="auth-content">
         <div class="auth-logo">
           <div class="logo-ring"></div>
-          <div class="logo-circle"><span class="rupee-symbol">₹</span></div>
+          <div class="logo-circle">
+            <span class="rupee-symbol">₹</span>
+          </div>
         </div>
         <h1 class="auth-title">Xpense</h1>
         <p class="auth-subtitle">Your financial clarity</p>
@@ -45,6 +47,7 @@
 
     <!-- Main app -->
     <div id="main-app" class="screen" style="display:none">
+      <!-- Sidebar nav -->
       <nav class="sidebar" id="sidebar">
         <div class="sidebar-logo">
           <div class="logo-mini">₹</div>
@@ -71,10 +74,6 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
             <span>Budget</span>
           </button>
-          <button class="nav-item" data-tab="goals">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-            <span>Goals</span>
-          </button>
           <button class="nav-item" data-tab="summary">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
             <span>Summary</span>
@@ -90,6 +89,7 @@
         </button>
       </nav>
 
+      <!-- Mobile top bar -->
       <div class="topbar">
         <button class="menu-btn" id="menu-btn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -98,10 +98,14 @@
         <button class="add-btn-top" id="add-btn-top">+</button>
       </div>
 
-      <main class="content" id="content"></main>
+      <!-- Content area -->
+      <main class="content" id="content">
+        <!-- Tabs injected by JS -->
+      </main>
     </div>
   </div>
 
+  <!-- Modal overlay -->
   <div class="modal-overlay" id="modal-overlay">
     <div class="modal" id="modal">
       <div class="modal-header">
@@ -112,6 +116,7 @@
     </div>
   </div>
 
+  <!-- Toast -->
   <div class="toast" id="toast"></div>
 
   <script src="data.js"></script>
