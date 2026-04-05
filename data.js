@@ -239,6 +239,135 @@ const DB = {
     this.saveBudgets(budgets);
   },
 
+
+  exportCSV() {
+    const txns = this.getTransactions().sort((a,b) => b.date.localeCompare(a.date));
+    const cats = this.getCategories();
+    let csv = 'Date,Type,Category,Amount,Payment,Description,Lent To,Transfer To\n';
+    txns.forEach(t => {
+      const cat = cats.find(c => c.id === t.categoryId);
+      const desc = (t.description||'').replace(/"/g,'""');
+      csv += `"${t.date}","${t.type}","${cat?.name||''}","${t.amount}","${t.payment||''}","${desc}","${t.lentTo||''}","${t.transferTo||''}"\n`;
+    });
+    this._download(new Blob([csv],{type:'text/csv'}), `xpense_transactions_${this.today()}.csv`);
+  },
+
+  exportJSON() {
+    const data = {
+      transactions: this.getTransactions(),
+      categories:   this.getCategories().filter(c => c.custom),
+      cards:        this.getCards(),
+      loans:        this.getLoans(),
+      budgets:      this.getBudgets(),
+      goals:        this.getGoals(),
+      exportedAt:   new Date().toISOString(),
+      version:      '1.0',
+    };
+    this._download(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}), `xpense_backup_${this.today()}.json`);
+  },
+
+  exportPDF(period) {
+    const txns = this.getTransactions();
+    const cats = this.getCategories();
+    const income  = txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
+    const expense = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+    const lent    = txns.filter(t=>t.type==='lent'&&!t.lentSettled).reduce((s,t)=>s+t.amount,0);
+    const catTotals = this.catTotals(txns).slice(0,10)
+      .map(({cat,total}) => `<tr><td>${cat.icon} ${cat.name}</td><td style="font-weight:700;color:#F04438;text-align:right">${this.fmtFull(total)}</td></tr>`).join('');
+    const rows = [...txns].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,200).map(t => {
+      const cat = cats.find(c=>c.id===t.categoryId);
+      const color = t.type==='income'?'#12B76A':t.type==='lent'?'#F79009':'#F04438';
+      return `<tr>
+        <td>${this.fmtDate(t.date)}</td>
+        <td><span style="background:${color}22;color:${color};padding:2px 7px;border-radius:8px;font-size:11px;font-weight:600">${t.type}</span></td>
+        <td>${cat?.icon||''} ${cat?.name||''}</td>
+        <td style="font-weight:700;color:${color};text-align:right">${t.type==='income'?'+':'−'}${this.fmtFull(t.amount)}</td>
+        <td>${(t.payment||'').replace(/-/g,' ')}</td>
+        <td>${t.description||''}</td>
+        <td>${t.lentTo||t.transferTo||''}</td>
+      </tr>`;
+    }).join('');
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+    <title>Xpense Report</title>
+    <style>
+      *{box-sizing:border-box}body{font-family:'Segoe UI',sans-serif;margin:0;padding:32px;color:#0F1629}
+      h1{font-size:28px;font-weight:800;color:#0D75F8;margin-bottom:4px}
+      .sub{color:#5A6278;font-size:13px;margin-bottom:28px}
+      .kpis{display:flex;gap:14px;margin-bottom:28px;flex-wrap:wrap}
+      .kpi{background:#F7F8FC;border-radius:12px;padding:16px 20px;min-width:140px}
+      .kpi-l{font-size:11px;color:#5A6278;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+      .kpi-v{font-size:22px;font-weight:800}
+      h2{font-size:16px;font-weight:700;margin:20px 0 10px;color:#0F1629;border-bottom:2px solid #E4E7EF;padding-bottom:6px}
+      table{width:100%;border-collapse:collapse;font-size:12px}
+      th{background:#0D75F8;color:white;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+      td{padding:7px 10px;border-bottom:1px solid #E4E7EF;vertical-align:middle}
+      tr:nth-child(even) td{background:#F7F8FC}
+      @media print{body{padding:16px}h2{page-break-before:auto}}
+    </style></head><body>
+    <h1>₹ Xpense Report</h1>
+    <div class="sub">Generated ${new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})}${period?' · '+period:''}</div>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">Total Income</div><div class="kpi-v" style="color:#12B76A">${this.fmtFull(income)}</div></div>
+      <div class="kpi"><div class="kpi-l">Total Expenses</div><div class="kpi-v" style="color:#F04438">${this.fmtFull(expense)}</div></div>
+      <div class="kpi"><div class="kpi-l">Net Savings</div><div class="kpi-v" style="color:${income-expense>=0?'#12B76A':'#F04438'}">${this.fmtFull(income-expense)}</div></div>
+      ${lent>0?`<div class="kpi"><div class="kpi-l">Pending Lent</div><div class="kpi-v" style="color:#F79009">${this.fmtFull(lent)}</div></div>`:''}
+    </div>
+    <h2>Top Categories</h2>
+    <table><thead><tr><th>Category</th><th style="text-align:right">Amount</th></tr></thead><tbody>${catTotals}</tbody></table>
+    <h2>Transactions (${txns.length})</h2>
+    <table><thead><tr><th>Date</th><th>Type</th><th>Category</th><th style="text-align:right">Amount</th><th>Payment</th><th>Description</th><th>Person</th></tr></thead><tbody>${rows}</tbody></table>
+    </body></html>`;
+    const w = window.open('','_blank');
+    if (!w) { alert('Please allow popups to export PDF'); return; }
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => w.print(), 600);
+  },
+
+  importTransactionsCSV(text) {
+    const cats = this.getCategories();
+    const lines = text.trim().split('\n');
+    const dataLines = lines[0].toLowerCase().includes('date') ? lines.slice(1) : lines;
+    let added = 0;
+    const existing = this.getTransactions();
+    const txns = [...existing];
+    dataLines.forEach(line => {
+      if (!line.trim()) return;
+      // Handle quoted CSV
+      const cols = line.match(/(".*?"|[^,]+)(?=,|$)/g) || line.split(',');
+      const clean = s => (s||'').replace(/^"|"$/g,'').trim();
+      const dateStr = clean(cols[0]);
+      const typeRaw = clean(cols[1]).toLowerCase();
+      const catName = clean(cols[2]);
+      const amount  = parseFloat(clean(cols[3]).replace(/[^0-9.]/g,''));
+      if (!dateStr || isNaN(amount) || amount <= 0) return;
+      const type = ['expense','income','transfer','lent'].includes(typeRaw) ? typeRaw : 'expense';
+      const cat  = cats.find(c => c.name.toLowerCase() === catName.toLowerCase()) || cats.find(c => c.type === type) || cats[0];
+      txns.push({
+        id: this.uuid(), type, amount,
+        categoryId:  cat?.id || '',
+        date:        dateStr,
+        payment:     clean(cols[4]) || 'cash',
+        description: clean(cols[5]) || '',
+        lentTo:      clean(cols[6]) || '',
+        transferTo:  clean(cols[7]) || '',
+        lentSettled: false,
+        createdAt:   new Date().toISOString(),
+      });
+      added++;
+    });
+    this.saveTransactions(txns);
+    return added;
+  },
+
+  _download(blob, filename) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  },
+
   spentInCategory(catId, month, year) {
     return this.getTransactions()
       .filter(t => {

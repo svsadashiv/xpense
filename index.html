@@ -13,7 +13,7 @@
 <body>
   <div id="app">
     <!-- Auth screen -->
-    <div id="auth-screen" class="screen active">
+    <div id="auth-screen">
       <div class="auth-bg"></div>
       <div class="auth-content">
         <div class="auth-logo">
@@ -46,7 +46,7 @@
     </div>
 
     <!-- Main app -->
-    <div id="main-app" class="screen" style="display:none">
+    <div id="main-app">
       <!-- Sidebar nav -->
       <nav class="sidebar" id="sidebar">
         <div class="sidebar-logo">
@@ -73,6 +73,10 @@
           <button class="nav-item" data-tab="budget">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
             <span>Budget</span>
+          </button>
+          <button class="nav-item" data-tab="goals">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+            <span>Goals</span>
           </button>
           <button class="nav-item" data-tab="summary">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>

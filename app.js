@@ -21,14 +21,6 @@ let pinSetup  = false;
 let pinConfirm = '';
 
 function initAuth() {
-  const dots = document.querySelectorAll('#pin-dots span');
-  const label = document.getElementById('pin-label');
-
-  if (!DB.hasPin()) {
-    pinSetup = true;
-    label.textContent = 'Create a 6-digit PIN';
-  }
-
   document.querySelectorAll('.num-btn[data-num]').forEach(btn => {
     btn.addEventListener('click', () => appendPin(btn.dataset.num));
   });
@@ -114,13 +106,14 @@ function switchTab(tab) {
 }
 
 function lockApp() {
+  if (!DB.hasPin()) {
+    showToast('Set a PIN in Settings first to lock the app');
+    return;
+  }
   pinBuffer = '';
+  updatePinDots();
   document.getElementById('main-app').style.display = 'none';
   document.getElementById('auth-screen').style.display = 'flex';
-  if (!DB.hasPin()) {
-    document.getElementById('pin-label').textContent = 'Enter PIN to continue';
-  }
-  updatePinDots();
 }
 
 // ── Tab Renderer ───────────────────────────────────────────────────────
@@ -136,6 +129,7 @@ function renderTab(tab) {
     case 'loans':        content.innerHTML = renderLoans();        afterLoans();        break;
     case 'cards':        content.innerHTML = renderCards();        afterCards();        break;
     case 'budget':       content.innerHTML = renderBudget();       afterBudget();       break;
+    case 'goals':        content.innerHTML = renderGoals();        break;
     case 'summary':      content.innerHTML = renderSummary();      afterSummary();      break;
     case 'settings':     content.innerHTML = renderSettings();     afterSettings();     break;
   }
@@ -249,72 +243,77 @@ function afterDashboard() {
 
 // ── Transactions ───────────────────────────────────────────────────────
 function renderTransactions() {
-  const cats  = DB.getCategories();
-  let txns    = DB.getTransactions();
+  const cats = DB.getCategories();
+  let txns   = DB.getTransactions();
 
-  // Filters
   if (txnFilter !== 'all') txns = txns.filter(t => t.type === txnFilter);
-  if (txnSearch) txns = txns.filter(t => (t.description||'').toLowerCase().includes(txnSearch.toLowerCase()) || (t.lentTo||'').toLowerCase().includes(txnSearch.toLowerCase()));
-  if (txnYear) {
-    txns = txns.filter(t => new Date(t.date).getFullYear() === txnYear);
-    if (txnMonth) txns = txns.filter(t => new Date(t.date).getMonth() + 1 === txnMonth);
+  if (txnSearch) {
+    const s = txnSearch.toLowerCase();
+    txns = txns.filter(t => (t.description||'').toLowerCase().includes(s) || (t.lentTo||'').toLowerCase().includes(s) || (t.transferTo||'').toLowerCase().includes(s));
   }
+  if (txnYear)    txns = txns.filter(t => new Date(t.date).getFullYear() === txnYear);
+  if (txnMonth)   txns = txns.filter(t => new Date(t.date).getMonth() + 1 === txnMonth);
   if (txnPayment) txns = txns.filter(t => t.payment === txnPayment);
   txns.sort((a,b) => b.date.localeCompare(a.date));
 
-  const income  = txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-  const expense = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
-  const lent    = txns.filter(t=>t.type==='lent'&&!t.lentSettled).reduce((s,t)=>s+t.amount,0);
+  const income   = txns.filter(t => t.type === 'income').reduce((s,t) => s+t.amount, 0);
+  const expense  = txns.filter(t => t.type === 'expense').reduce((s,t) => s+t.amount, 0);
+  const lent     = txns.filter(t => t.type === 'lent' && !t.lentSettled).reduce((s,t) => s+t.amount, 0);
+  const transfer = txns.filter(t => t.type === 'transfer').reduce((s,t) => s+t.amount, 0);
+  const net      = income - expense - lent - transfer;
 
-  // Group by date
   const groups = {};
-  txns.forEach(t => { (groups[t.date] = groups[t.date]||[]).push(t); });
+  txns.forEach(t => (groups[t.date] = groups[t.date] || []).push(t));
   const sortedDates = Object.keys(groups).sort((a,b) => b.localeCompare(a));
 
-  const years = [...new Set(DB.getTransactions().map(t => new Date(t.date).getFullYear()))].sort((a,b)=>b-a);
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const allYears = [...new Set(DB.getTransactions().map(t => new Date(t.date).getFullYear()))].sort((a,b) => b-a);
   const payments = ['cash','debit-card','credit-card','upi','net-banking','cheque','wallet'];
+  const mNames   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-  return `
-  <div class="page-header">
-    <div><div class="page-title">Transactions</div><div class="page-subtitle">${txns.length} transactions</div></div>
-    <button class="btn btn-primary" onclick="openAddTransaction()">+ Add</button>
-  </div>
+  const yearOpts  = allYears.map(y => '<option value="'+y+'"'+(txnYear===y?' selected':'')+'>'+y+'</option>').join('');
+  const monthOpts = mNames.map((m,i) => '<option value="'+(i+1)+'"'+(txnMonth===i+1?' selected':'')+'>'+m+'</option>').join('');
+  const payOpts   = payments.map(p => '<option value="'+p+'"'+(txnPayment===p?' selected':'')+'>'+p.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase())+'</option>').join('');
+  const typeChips = ['all','expense','income','transfer','lent'].map(f =>
+    '<button class="filter-chip'+(txnFilter===f?' active':'')+'" onclick="txnFilter=\''+f+'\';renderTab(\'transactions\')">'+(f==='all'?'All Types':f.charAt(0).toUpperCase()+f.slice(1))+'</button>'
+  ).join('');
 
-  <div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
-    <input class="search-input" id="txn-search" placeholder="Search transactions…" value="${txnSearch}" oninput="txnSearch=this.value;renderTab('transactions')" />
-    <select class="form-select" style="width:auto" onchange="txnYear=this.value?+this.value:null;txnMonth=null;renderTab('transactions')">
-      <option value="">All Years</option>
-      ${years.map(y=>`<option value="${y}" ${txnYear===y?'selected':''}>${y}</option>`).join('')}
-    </select>
-    ${txnYear ? `<select class="form-select" style="width:auto" onchange="txnMonth=this.value?+this.value:null;renderTab('transactions')">
-      <option value="">All Months</option>
-      ${months.map((m,i)=>`<option value="${i+1}" ${txnMonth===i+1?'selected':''}>${m}</option>`).join('')}
-    </select>` : ''}
-    <select class="form-select" style="width:auto" onchange="txnPayment=this.value||null;renderTab('transactions')">
-      <option value="">All Payment Methods</option>
-      ${payments.map(p=>`<option value="${p}" ${txnPayment===p?'selected':''}>${p.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>`).join('')}
-    </select>
-  </div>
+  const txnRows = sortedDates.length === 0
+    ? '<div class="empty-state"><div class="empty-icon">🔍</div><p>No transactions found</p></div>'
+    : sortedDates.map(date =>
+        '<div class="section-date">'+formatDateHeader(date)+'</div>' +
+        '<div class="txn-list">'+groups[date].map(t => txnRowHTML(t, cats, true)).join('')+'</div>'
+      ).join('');
 
-  <div class="filter-bar">
-    ${['all','expense','income','transfer','lent'].map(f=>`
-    <button class="filter-chip ${txnFilter===f?'active':''}" onclick="txnFilter='${f}';renderTab('transactions')">${f==='all'?'All Types':f.charAt(0).toUpperCase()+f.slice(1)}</button>`).join('')}
-  </div>
+  const lentBadge = lent > 0 ? '<div class="badge badge-orange" style="padding:6px 12px">🤝 Lent '+DB.fmtINR(lent)+'</div>' : '';
 
-  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-    <div class="badge badge-green" style="padding:6px 12px">↓ Income ${DB.fmtINR(income)}</div>
-    <div class="badge badge-red" style="padding:6px 12px">↑ Expense ${DB.fmtINR(expense)}</div>
-    ${lent>0?`<div class="badge badge-orange" style="padding:6px 12px">🤝 Pending ${DB.fmtINR(lent)}</div>`:''}
-    <div class="badge badge-blue" style="padding:6px 12px">Net ${DB.fmtINR(income-expense)}</div>
-  </div>
+  return '<div class="page-header">' +
+    '<div><div class="page-title">Transactions</div><div class="page-subtitle">'+txns.length+' transactions</div></div>' +
+    '<button class="btn btn-primary" onclick="openAddTransaction()">+ Add</button></div>' +
 
-  ${sortedDates.length === 0 ? `<div class="empty-state"><div class="empty-icon">🔍</div><p>No transactions found</p></div>` :
-    sortedDates.map(date => `
-    <div class="section-date">${formatDateHeader(date)}</div>
-    <div class="txn-list">${groups[date].map(t => txnRowHTML(t, cats, true)).join('')}</div>
-  `).join('')}`;
+    '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">' +
+      '<input class="search-input" placeholder="Search…" value="'+txnSearch+'" oninput="txnSearch=this.value;renderTab(\'transactions\')" />' +
+      '<select class="form-select" style="width:auto" onchange="txnYear=this.value?+this.value:null;txnMonth=null;renderTab(\'transactions\')">' +
+        '<option value="">All Years</option>'+yearOpts+'</select>' +
+      '<select class="form-select" style="width:auto" onchange="txnMonth=this.value?+this.value:null;renderTab(\'transactions\')">' +
+        '<option value="">All Months</option>'+monthOpts+'</select>' +
+      '<select class="form-select" style="width:auto" onchange="txnPayment=this.value||null;renderTab(\'transactions\')">' +
+        '<option value="">All Payments</option>'+payOpts+'</select>' +
+      '<button class="btn btn-secondary btn-sm" onclick="txnYear=null;txnMonth=null;txnPayment=null;txnSearch=\'\';txnFilter=\'all\';renderTab(\'transactions\')">Reset</button>' +
+    '</div>' +
+
+    '<div class="filter-bar">'+typeChips+'</div>' +
+
+    '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">' +
+      '<div class="badge badge-green" style="padding:6px 12px">↓ Income '+DB.fmtINR(income)+'</div>' +
+      '<div class="badge badge-red" style="padding:6px 12px">↑ Outflow '+DB.fmtINR(expense+lent+transfer)+'</div>' +
+      '<div class="badge badge-blue" style="padding:6px 12px">Net '+DB.fmtINR(net)+'</div>' +
+      lentBadge +
+    '</div>' +
+
+    txnRows;
 }
+
+
 
 function txnRowHTML(t, cats, showActions = false) {
   const cat = cats.find(c => c.id === t.categoryId);
@@ -460,59 +459,67 @@ function creditCardHTML(c) {
   const isOpen = expandedCards.has(c.id);
   const overdue = new Date(c.dueDate) < new Date() && c.balance > 0;
 
-  return `
-  <div style="margin-bottom:16px">
-    <div class="card-visual" style="background:linear-gradient(135deg,${c.color},${c.color}aa)" onclick="toggleCard('${c.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div class="card-bank">${c.bank}</div>
-        <div style="display:flex;gap:8px;align-items:center">
-          ${overdue?'<span style="background:rgba(255,255,255,.3);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">⚠ OVERDUE</span>':''}
-          <span style="font-size:18px">${isOpen?'▲':'▼'}</span>
-        </div>
-      </div>
-      <div class="card-number">•••• •••• •••• ${c.last4}</div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-end">
-        <div class="card-name">${c.name}</div>
-        <div style="text-align:right">
-          <div style="font-size:11px;opacity:.7">Due</div>
-          <div style="font-size:16px;font-weight:700">${DB.fmtINR(c.balance)}</div>
-        </div>
-      </div>
-    </div>
-    <div class="card" style="border-top-left-radius:0;border-top-right-radius:0;border-top:none;${isOpen?'':'display:none'}" id="card-detail-${c.id}">
-      <div class="card-grid">
+  const detail = isOpen ? `
+    <div style="padding:16px;border-top:1px solid var(--border)">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
         <div><div class="card-stat-label">Balance</div><div class="card-stat-value text-red">${DB.fmtFull(c.balance)}</div></div>
         <div><div class="card-stat-label">Limit</div><div class="card-stat-value">${DB.fmtFull(c.limit)}</div></div>
         <div><div class="card-stat-label">Available</div><div class="card-stat-value text-green">${DB.fmtFull(c.limit - c.balance)}</div></div>
       </div>
-      <div style="margin-top:14px">
+      <div style="margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text3);margin-bottom:4px">
           <span>Utilization</span><span style="color:${utilColor};font-weight:700">${util.toFixed(1)}%</span>
         </div>
         <div class="util-bar"><div class="util-fill" style="width:${util}%;background:${utilColor}"></div></div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:6px;font-size:12px;color:var(--text3)">
-        <span>📅 Due ${DB.fmtDate(c.dueDate)}</span>
-        <span>·</span>
-        <span>Min ₹${c.minPayment?.toLocaleString('en-IN') || '0'}</span>
-        <span>·</span>
-        <span>${c.rate}% p.a.</span>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
+        📅 Due ${DB.fmtDate(c.dueDate)} &nbsp;·&nbsp; Min ₹${(c.minPayment||0).toLocaleString('en-IN')} &nbsp;·&nbsp; ${c.rate||36}% p.a.
       </div>
-      <div style="display:flex;gap:10px;margin-top:14px">
+      <div style="display:flex;gap:8px">
         <button class="btn btn-primary" style="flex:1" onclick="openSettleCard('${c.id}')">💳 Pay Now</button>
         <button class="btn btn-secondary" onclick="openEditCard('${c.id}')">✏️</button>
         <button class="btn btn-danger btn-sm" onclick="deleteCard('${c.id}')">🗑️</button>
       </div>
+    </div>` : '';
+
+  return `
+  <div style="margin-bottom:16px;border-radius:14px;overflow:hidden;box-shadow:var(--shadow)">
+    <div onclick="toggleCard('${c.id}')" style="background:linear-gradient(135deg,${c.color},${c.color}bb);padding:20px;color:white;cursor:pointer;position:relative;overflow:hidden">
+      <div style="position:absolute;top:-20px;right:-20px;width:120px;height:120px;border-radius:50%;background:rgba(255,255,255,.08)"></div>
+      <div style="position:relative">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+          <div>
+            <div style="font-size:14px;font-weight:600;opacity:.9">${c.bank}</div>
+            <div style="font-family:'DM Mono',monospace;font-size:15px;margin-top:8px;letter-spacing:2px">•••• •••• •••• ${c.last4}</div>
+            <div style="font-size:13px;opacity:.75;margin-top:3px">${c.name}</div>
+          </div>
+          <div style="text-align:right">
+            ${overdue ? '<div style="background:rgba(255,200,0,.3);padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;margin-bottom:6px">⚠ OVERDUE</div>' : ''}
+            <div style="font-size:11px;opacity:.7">Due Balance</div>
+            <div style="font-size:18px;font-weight:700">${DB.fmtINR(c.balance)}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px">
+          <span><span style="opacity:.7">Limit </span><strong>${DB.fmtINR(c.limit)}</strong></span>
+          <span><span style="opacity:.7">Available </span><strong>${DB.fmtINR(c.limit - c.balance)}</strong></span>
+          <span><span style="opacity:.7">Due </span><strong>${DB.fmtDate(c.dueDate)}</strong></span>
+        </div>
+        <div style="height:4px;background:rgba(255,255,255,.25);border-radius:2px;overflow:hidden">
+          <div style="height:100%;background:white;width:${util.toFixed(1)}%;border-radius:2px;opacity:.85"></div>
+        </div>
+        <div style="text-align:right;font-size:11px;opacity:.6;margin-top:4px">${isOpen ? '▲ Less' : '▼ Details'}</div>
+      </div>
     </div>
+    ${detail}
   </div>`;
 }
+
 
 function afterCards() {}
 
 // ── Budget ─────────────────────────────────────────────────────────────
 function renderBudget() {
   const budgets = DB.getBudgets().filter(b => b.month === budgetMonth && b.year === budgetYear);
-  const goals   = DB.getGoals();
   const cats    = DB.getCategories();
   const months  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -521,7 +528,7 @@ function renderBudget() {
 
   return `
   <div class="page-header">
-    <div><div class="page-title">Budget & Goals</div></div>
+    <div><div class="page-title">Budget</div></div>
     <button class="btn btn-primary" onclick="openAddBudget()">+ Budget</button>
   </div>
 
@@ -546,14 +553,9 @@ function renderBudget() {
   </div>
   ${budgets.map(b => budgetRowHTML(b, cats)).join('')}` :
   `<div class="empty-state"><div class="empty-icon">📊</div><p>No budgets for this month.<br>Add one or replicate from a previous month.</p></div>`}
-
-  <div style="display:flex;align-items:center;justify-content:space-between;margin:28px 0 14px">
-    <div class="page-title" style="font-size:20px">Savings Goals</div>
-    <button class="btn btn-secondary btn-sm" onclick="openAddGoal()">+ Goal</button>
-  </div>
-  ${goals.length === 0 ? `<div class="empty-state"><div class="empty-icon">🎯</div><p>No savings goals yet.</p></div>` :
-    goals.map(g => goalCardHTML(g)).join('')}`;
+  `;
 }
+
 
 function budgetRowHTML(b, cats) {
   const cat = cats.find(c => c.id === b.categoryId);
@@ -605,6 +607,16 @@ function goalCardHTML(g) {
 }
 
 function afterBudget() {}
+
+// ── Goals ──────────────────────────────────────────────────────────────
+function renderGoals() {
+  const goals = DB.getGoals();
+  const header = '<div class="page-header"><div><div class="page-title">Savings Goals</div></div><button class="btn btn-primary" onclick="openAddGoal()">+ New Goal</button></div>';
+  const body = goals.length === 0
+    ? '<div class="empty-state"><div class="empty-icon">🎯</div><p>No savings goals yet.<br>Set a target and track your progress.</p></div>'
+    : goals.map(g => goalCardHTML(g)).join('');
+  return header + body;
+}
 
 // ── Summary ────────────────────────────────────────────────────────────
 function renderSummary() {
@@ -723,12 +735,16 @@ function renderSettings() {
     <div class="settings-section-title">Security</div>
     <div class="settings-row">
       <div><div class="settings-row-label">PIN Lock</div><div class="settings-row-sub">${DB.hasPin()?'PIN is set':'No PIN configured'}</div></div>
-      <button class="btn btn-secondary btn-sm" onclick="${DB.hasPin()?'changePin()':'setPin()'}">${DB.hasPin()?'Change':'Set PIN'}</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-secondary btn-sm" onclick="${DB.hasPin()?'changePin()':'setPin()'}">${DB.hasPin()?'Change PIN':'Set PIN'}</button>
+        ${DB.hasPin()?'<button class=\"btn btn-danger btn-sm\" onclick=\"removePin()\">Remove</button>':''}
+      </div>
     </div>
   </div>
   <div class="settings-section">
     <div class="settings-section-title">Data Management</div>
     <div class="settings-row"><div class="settings-row-label">Export Transactions CSV</div><button class="btn btn-secondary btn-sm" onclick="DB.exportCSV()">Export</button></div>
+    <div class="settings-row"><div class="settings-row-label">Export Summary PDF</div><button class="btn btn-secondary btn-sm" onclick="DB.exportPDF()">Export</button></div>
     <div class="settings-row"><div class="settings-row-label">Export Full Backup JSON</div><button class="btn btn-secondary btn-sm" onclick="DB.exportJSON()">Export</button></div>
     <div class="settings-row"><div class="settings-row-label">Import JSON Backup</div><button class="btn btn-secondary btn-sm" onclick="document.getElementById('import-file').click()">Import</button></div>
     <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(this)" />
@@ -808,10 +824,18 @@ function openAddTransaction(editId = null) {
     </div>
     <div class="form-group">
       <label class="form-label">Payment Method</label>
-      <select class="form-select" id="txn-payment">
+      <select class="form-select" id="txn-payment" onchange="onPaymentChange(this.value)">
         ${['cash','debit-card','credit-card','upi','net-banking','cheque','wallet'].map(p=>`<option value="${p}" ${edit?.payment===p?'selected':''}>${p.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>`).join('')}
       </select>
     </div>
+  </div>
+  </div>
+  <div id="cc-select-group" class="form-group" style="${edit?.payment==='credit-card' ? '' : 'display:none'}">
+    <label class="form-label">Credit Card</label>
+    ${DB.getCards().length === 0
+      ? '<p style="color:var(--orange);font-size:13px">⚠ No cards added. Go to Cards tab first.</p>'
+      : `<select class="form-select" id="txn-card">${DB.getCards().map((c,i)=>`<option value="${c.id}" ${edit?.creditCardId===c.id||(i===0&&!edit?.creditCardId)?'selected':''}>${c.bank} ···· ${c.last4} (Avail: ${DB.fmtINR(c.limit-c.balance)})</option>`).join('')}</select>`
+    }
   </div>
   <input type="hidden" id="txn-type" value="${type}" />
   <input type="hidden" id="txn-cat" value="${edit?.categoryId||''}" />
@@ -834,6 +858,11 @@ function openAddTransaction(editId = null) {
 }
 
 function openEditTransaction(id) { openAddTransaction(id); }
+
+function onPaymentChange(val) {
+  const g = document.getElementById('cc-select-group');
+  if (g) g.style.display = val === 'credit-card' ? '' : 'none';
+}
 
 function switchTxnType(type) {
   document.getElementById('txn-type').value = type;
@@ -1308,6 +1337,13 @@ function setPin() {
 
 function changePin() { setPin(); }
 
+function removePin() {
+  if (!confirm('Remove PIN? App will open without a lock screen.')) return;
+  DB.clearPin();
+  showToast('PIN removed');
+  renderTab('settings');
+}
+
 function savePin() {
   const p1 = document.getElementById('new-pin').value;
   const p2 = document.getElementById('confirm-pin').value;
@@ -1319,7 +1355,7 @@ function savePin() {
   renderTab('settings');
 }
 
-function handleImport(input) {
+function handleImportJSON(input) {
   const file = input.files[0];
   if (!file) return;
   const reader = new FileReader();
@@ -1327,9 +1363,26 @@ function handleImport(input) {
     try {
       DB.importJSON(e.target.result);
       renderTab(currentTab);
-      showToast('Import successful ✓','success');
+      showToast('Backup restored ✓','success');
     } catch(err) {
-      showToast('Import failed: invalid file','error');
+      showToast('Import failed: invalid JSON','error');
+    }
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
+function handleImportCSV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const count = DB.importTransactionsCSV(e.target.result);
+      renderTab(currentTab);
+      showToast('Imported ' + count + ' transactions ✓','success');
+    } catch(err) {
+      showToast('CSV import failed: ' + err.message,'error');
     }
   };
   reader.readAsText(file);
@@ -1377,13 +1430,14 @@ function showToast(msg, type = '') {
 
 // ── Init ───────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  initAuth();
   initNav();
   initModal();
-
-  if (!DB.hasPin()) {
-    // No PIN set — go straight to app
-    document.getElementById('auth-screen').style.display = 'none';
+  if (DB.hasPin()) {
+    // PIN exists — show auth screen and wire up numpad
+    initAuth();
+    document.getElementById('auth-screen').style.display = 'flex';
+  } else {
+    // No PIN — go straight to app
     document.getElementById('main-app').style.display = 'flex';
     renderTab('dashboard');
   }

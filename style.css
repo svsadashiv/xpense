@@ -41,7 +41,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text1); min
   background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(255,255,255,.12) 0%, transparent 70%);
 }
 #auth-screen {
-  position: relative; display: flex; align-items: center; justify-content: center;
+  position: relative; display: none; align-items: center; justify-content: center;
   min-height: 100vh; overflow: hidden;
 }
 .auth-content {
@@ -89,7 +89,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text1); min
 .del-btn { font-size: 18px; }
 
 /* ── Layout ────────────────────────────────────────────────────────── */
-#main-app { display: flex; min-height: 100vh; }
+#main-app { display: none; min-height: 100vh; }
 .sidebar {
   width: var(--sidebar-w); background: var(--surface);
   border-right: 1px solid var(--border);
