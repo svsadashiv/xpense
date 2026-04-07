@@ -32,6 +32,9 @@ const DB = {
     { id:'c14', name:'Other Income',   icon:'➕', color:'#16A085', type:'income'  },
     { id:'c15', name:'Transfer',       icon:'↔️', color:'#5856D6', type:'transfer'},
     { id:'c16', name:'Lent',           icon:'🤝', color:'#FF9500', type:'lent'   },
+    { id:'c17', name:'Loan EMI',       icon:'🏦', color:'#6C5CE7', type:'expense' },
+    { id:'c18', name:'Credit Card',    icon:'💳', color:'#0984E3', type:'expense' },
+    { id:'c19', name:'Savings Goal',    icon:'🎯', color:'#00B894', type:'expense' },
   ],
 
   // ── Load / Save ────────────────────────────────────────────────────
@@ -50,7 +53,11 @@ const DB = {
   getTransactions() { return this.load(this.KEYS.transactions); },
   getCategories()   {
     const saved = this.load(this.KEYS.categories, null);
-    return saved || this.DEFAULT_CATEGORIES;
+    if (!saved) return this.DEFAULT_CATEGORIES;
+    // Always ensure system default categories exist (merge missing ones by id)
+    const savedIds = new Set(saved.map(c => c.id));
+    const missing  = this.DEFAULT_CATEGORIES.filter(c => !savedIds.has(c.id));
+    return missing.length ? [...saved, ...missing] : saved;
   },
   getCards()    { return this.load(this.KEYS.cards); },
   getLoans()    { return this.load(this.KEYS.loans); },
@@ -267,11 +274,32 @@ const DB = {
   },
 
   exportPDF(period) {
-    const txns = this.getTransactions();
+    const now = new Date();
+    let txns = this.getTransactions();
+    if (period === 'month') {
+      txns = txns.filter(t => {
+        const d = new Date(t.date);
+        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      });
+    } else if (period === '3m') {
+      const since = new Date(now);
+      since.setMonth(since.getMonth() - 3);
+      txns = txns.filter(t => new Date(t.date) >= since);
+    } else if (period === '6m') {
+      const since = new Date(now);
+      since.setMonth(since.getMonth() - 6);
+      txns = txns.filter(t => new Date(t.date) >= since);
+    } else if (period === 'year') {
+      txns = txns.filter(t => new Date(t.date).getFullYear() === now.getFullYear());
+    }
+
     const cats = this.getCategories();
     const income  = txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-    const expense = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+    const expenseOnly = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+    const transfer = txns.filter(t=>t.type==='transfer').reduce((s,t)=>s+t.amount,0);
+    const expense = expenseOnly + transfer;
     const lent    = txns.filter(t=>t.type==='lent'&&!t.lentSettled).reduce((s,t)=>s+t.amount,0);
+    const net = income - expense - lent;
     const catTotals = this.catTotals(txns).slice(0,10)
       .map(({cat,total}) => `<tr><td>${cat.icon} ${cat.name}</td><td style="font-weight:700;color:#F04438;text-align:right">${this.fmtFull(total)}</td></tr>`).join('');
     const rows = [...txns].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,200).map(t => {
@@ -309,9 +337,10 @@ const DB = {
     <div class="kpis">
       <div class="kpi"><div class="kpi-l">Total Income</div><div class="kpi-v" style="color:#12B76A">${this.fmtFull(income)}</div></div>
       <div class="kpi"><div class="kpi-l">Total Expenses</div><div class="kpi-v" style="color:#F04438">${this.fmtFull(expense)}</div></div>
-      <div class="kpi"><div class="kpi-l">Net Savings</div><div class="kpi-v" style="color:${income-expense>=0?'#12B76A':'#F04438'}">${this.fmtFull(income-expense)}</div></div>
+      <div class="kpi"><div class="kpi-l">Net Savings</div><div class="kpi-v" style="color:${net>=0?'#12B76A':'#F04438'}">${this.fmtFull(net)}</div></div>
       ${lent>0?`<div class="kpi"><div class="kpi-l">Pending Lent</div><div class="kpi-v" style="color:#F79009">${this.fmtFull(lent)}</div></div>`:''}
     </div>
+    <div style="margin:-12px 0 18px;color:#5A6278;font-size:12px">Expenses include transfers.</div>
     <h2>Top Categories</h2>
     <table><thead><tr><th>Category</th><th style="text-align:right">Amount</th></tr></thead><tbody>${catTotals}</tbody></table>
     <h2>Transactions (${txns.length})</h2>
@@ -371,6 +400,7 @@ const DB = {
   spentInCategory(catId, month, year) {
     return this.getTransactions()
       .filter(t => {
+        // Parse as local noon to avoid UTC date-shift at month boundaries.
         const d = new Date(t.date);
         return t.categoryId === catId && t.type === 'expense' &&
                d.getMonth() + 1 === month && d.getFullYear() === year;

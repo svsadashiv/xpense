@@ -1,3 +1,8 @@
+function setSettleAmt(v) {
+  var el = document.getElementById('settle-person-amt');
+  if (el) el.value = v;
+}
+
 // ── Xpense Web App ──────────────────────────────────────────────────
 'use strict';
 
@@ -147,27 +152,37 @@ function renderDashboard() {
   const income  = thisMonth.filter(t => t.type === 'income').reduce((s,t) => s+t.amount, 0);
   const expense = thisMonth.filter(t => t.type==='expense'||t.type==='lent'||t.type==='transfer').reduce((s,t) => s+t.amount, 0);
   const net     = income - expense;
-  const pending = txns.filter(t => t.type === 'lent' && !t.lentSettled).reduce((s,t)=>s+t.amount,0);
   const catTotals = DB.catTotals(thisMonth);
   const recent  = [...txns].sort((a,b) => b.date.localeCompare(a.date)).slice(0,6);
   const cats    = DB.getCategories();
 
+  // Group pending lent by person
+  const allTxns2 = DB.getTransactions();
+  const pendingTxns = allTxns2.filter(t => t.type === 'lent' && !t.lentSettled);
+  const pendingByPerson = {};
+  pendingTxns.forEach(t => {
+    const name = t.lentTo || 'Unknown';
+    pendingByPerson[name] = (pendingByPerson[name] || 0) + t.amount;
+  });
+
   let pendingHTML = '';
-  const pendingTxns = txns.filter(t => t.type === 'lent' && !t.lentSettled);
-  if (pendingTxns.length) {
-    pendingHTML = `<div class="lent-card mt-24">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-        <span style="font-weight:700;color:#B45309">🤝 Pending to Recover</span>
-        <span style="font-weight:700;color:#B45309">${DB.fmtINR(pending)}</span>
-      </div>
-      ${pendingTxns.map(t => `
-      <div class="lent-row">
-        <span style="font-weight:600">${t.lentTo || 'Unknown'}</span>
-        <span style="font-size:12px;color:#92400E">${DB.fmtDate(t.date)}</span>
-        <span style="font-weight:700;color:#D97706">${DB.fmtINR(t.amount)}</span>
-        <button class="btn btn-sm btn-success" onclick="settleLent('${t.id}')">Settled</button>
-      </div>`).join('')}
-    </div>`;
+  if (Object.keys(pendingByPerson).length) {
+    const personRows = Object.entries(pendingByPerson).map(([name, amt]) => {
+      const safeName = name.replace(/\\/g,'').replace(/'/g,'\\x27');
+      const cnt = pendingTxns.filter(t=>(t.lentTo||'Unknown')===name).length;
+      return '<div class="lent-row">' +
+        '<span style="font-weight:600">👤 ' + name + '</span>' +
+        '<span style="font-size:12px;color:#92400E">' + cnt + ' txn(s)</span>' +
+        '<span style="font-weight:700;color:#D97706">' + DB.fmtINR(amt) + '</span>' +
+        '<button class="btn btn-sm btn-success" onclick="openSettleByPerson(\'' + safeName + '\')">Settle</button>' +
+        '</div>';
+    }).join('');
+    const pendingTotal = Object.values(pendingByPerson).reduce((a,b)=>a+b,0);
+    pendingHTML = '<div class="lent-card mt-24">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
+        '<span style="font-weight:700;color:#B45309">🤝 Pending to Recover</span>' +
+        '<span style="font-weight:700;color:#B45309">' + DB.fmtINR(pendingTotal) + '</span>' +
+      '</div>' + personRows + '</div>';
   }
 
   let catBars = '';
@@ -198,7 +213,7 @@ function renderDashboard() {
     <div class="hero-row">
       <div class="hero-stat"><div class="hero-stat-label">↓ Income</div><div class="hero-stat-value">${DB.fmtINR(income)}</div></div>
       <div class="hero-stat"><div class="hero-stat-label">↑ Outflow</div><div class="hero-stat-value">${DB.fmtINR(expense)}</div></div>
-      ${pending > 0 ? `<div class="hero-stat"><div class="hero-stat-label">🤝 Pending</div><div class="hero-stat-value">${DB.fmtINR(pending)}</div></div>` : ''}
+      ${Object.keys(pendingByPerson).length > 0 ? `<div class="hero-stat"><div class="hero-stat-label">🤝 Pending</div><div class="hero-stat-value">${DB.fmtINR(Object.values(pendingByPerson).reduce((a,b)=>a+b,0))}</div></div>` : ''}
     </div>
   </div>
 
@@ -635,19 +650,25 @@ function renderSummary() {
     txns = txns.filter(t => new Date(t.date).getFullYear()===now.getFullYear());
   }
 
-  const income  = txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-  const expense = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
-  const pending = txns.filter(t=>t.type==='lent'&&!t.lentSettled).reduce((s,t)=>s+t.amount,0);
-  const net     = income - expense;
-  const rate    = income > 0 ? (net/income*100) : 0;
+  const income   = txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
+  const expenseOnly = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+  const lentOut  = txns.filter(t=>t.type==='lent'&&!t.lentSettled).reduce((s,t)=>s+t.amount,0);
+  const transfer = txns.filter(t=>t.type==='transfer').reduce((s,t)=>s+t.amount,0);
+  const expense  = expenseOnly + transfer;
+  const pending  = lentOut;
+  const net      = income - expense - lentOut;
+  const rate     = income > 0 ? (net/income*100) : 0;
   const catData = DB.catTotals(txns);
 
   return `
   <div class="page-header">
     <div><div class="page-title">Summary</div></div>
-    <div class="period-selector">
-      ${[['month','This Month'],['3m','3 Months'],['6m','6 Months'],['year','This Year'],['all','All Time']].map(([v,l])=>`
-      <button class="period-btn ${summaryPeriod===v?'active':''}" onclick="summaryPeriod='${v}';renderTab('summary')">${l}</button>`).join('')}
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div class="period-selector">
+        ${[['month','This Month'],['3m','3 Months'],['6m','6 Months'],['year','This Year'],['all','All Time']].map(([v,l])=>`
+        <button class="period-btn ${summaryPeriod===v?'active':''}" onclick="summaryPeriod='${v}';renderTab('summary')">${l}</button>`).join('')}
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="DB.exportPDF(summaryPeriod)">📄 Export PDF</button>
     </div>
   </div>
 
@@ -744,16 +765,30 @@ function renderSettings() {
   <div class="settings-section">
     <div class="settings-section-title">Data Management</div>
     <div class="settings-row"><div class="settings-row-label">Export Transactions CSV</div><button class="btn btn-secondary btn-sm" onclick="DB.exportCSV()">Export</button></div>
-    <div class="settings-row"><div class="settings-row-label">Export Summary PDF</div><button class="btn btn-secondary btn-sm" onclick="DB.exportPDF()">Export</button></div>
     <div class="settings-row"><div class="settings-row-label">Export Full Backup JSON</div><button class="btn btn-secondary btn-sm" onclick="DB.exportJSON()">Export</button></div>
-    <div class="settings-row"><div class="settings-row-label">Import JSON Backup</div><button class="btn btn-secondary btn-sm" onclick="document.getElementById('import-file').click()">Import</button></div>
-    <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImport(this)" />
+    <div class="settings-row">
+      <div><div class="settings-row-label">Import Transactions CSV</div><div class="settings-row-sub">Only imports transactions</div></div>
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('imp-csv').click()">Import</button>
+    </div>
+    <div class="settings-row">
+      <div><div class="settings-row-label">Import Full Backup JSON</div><div class="settings-row-sub">Restores all data</div></div>
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('imp-json').click()">Import</button>
+    </div>
+    <input type="file" id="imp-csv"  accept=".csv"  style="display:none" onchange="handleImportCSV(this)" />
+    <input type="file" id="imp-json" accept=".json" style="display:none" onchange="handleImportJSON(this)" />
   </div>
   <div class="settings-section">
     <div class="settings-section-title">Danger Zone</div>
     <div class="settings-row">
       <div><div class="settings-row-label" style="color:var(--red)">Clear All Data</div><div class="settings-row-sub">Permanently deletes everything</div></div>
       <button class="btn btn-danger btn-sm" onclick="clearAllData()">Clear</button>
+    </div>
+  </div>
+  <div class="settings-section">
+    <div class="settings-section-title">Categories</div>
+    <div class="settings-row">
+      <div><div class="settings-row-label">Manage Categories</div><div class="settings-row-sub">Add custom expense & income categories</div></div>
+      <button class="btn btn-secondary btn-sm" onclick="openManageCategories()">Manage</button>
     </div>
   </div>
   <div class="settings-section">
@@ -764,6 +799,71 @@ function renderSettings() {
 }
 
 function afterSettings() {}
+
+function openManageCategories() {
+  const cats = DB.getCategories();
+  const custom = cats.filter(c => c.custom);
+  const rows = custom.length === 0
+    ? '<p style="color:var(--text3);font-size:14px;padding:8px 0">No custom categories yet.</p>'
+    : custom.map(c =>
+        '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">' +
+        '<span style="font-size:20px">'+c.icon+'</span>' +
+        '<span style="flex:1;font-size:14px;font-weight:500">'+c.name+'</span>' +
+        '<span class="badge '+(c.type==='income'?'badge-green':'badge-red')+'">'+c.type+'</span>' +
+        '<button class="icon-btn icon-btn-del" onclick="deleteCategory(\''+c.id+'\')">🗑️</button></div>'
+      ).join('');
+
+  openModal('Manage Categories',
+    '<div style="margin-bottom:16px">' +
+    '<div style="font-weight:600;font-size:14px;margin-bottom:10px">Custom Categories</div>' +
+    rows + '</div>' +
+    '<div style="border-top:1px solid var(--border);padding-top:16px">' +
+    '<div style="font-weight:600;font-size:14px;margin-bottom:10px">Add New Category</div>' +
+    '<div class="form-row">' +
+      '<div class="form-group"><label class="form-label">Name</label>' +
+        '<input class="form-input" id="cat-new-name" placeholder="e.g. Gym, Petrol" /></div>' +
+      '<div class="form-group"><label class="form-label">Type</label>' +
+        '<select class="form-select" id="cat-new-type">' +
+          '<option value="expense">Expense</option>' +
+          '<option value="income">Income</option>' +
+        '</select></div>' +
+    '</div>' +
+    '<div class="form-row">' +
+      '<div class="form-group"><label class="form-label">Icon (emoji)</label>' +
+        '<input class="form-input" id="cat-new-icon" placeholder="🏋️" maxlength="4" /></div>' +
+      '<div class="form-group"><label class="form-label">Color</label>' +
+        '<input type="color" id="cat-new-color" value="#007AFF" style="width:100%;height:40px;border-radius:8px;border:1px solid var(--border);cursor:pointer" /></div>' +
+    '</div></div>' +
+    '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" onclick="closeModal()">Close</button>' +
+      '<button class="btn btn-primary" onclick="addCategory()">Add Category</button>' +
+    '</div>'
+  );
+}
+
+function addCategory() {
+  const name  = document.getElementById('cat-new-name').value.trim();
+  const type  = document.getElementById('cat-new-type').value;
+  const icon  = document.getElementById('cat-new-icon').value.trim() || '📌';
+  const color = document.getElementById('cat-new-color').value;
+  if (!name) { showToast('Enter a category name', 'error'); return; }
+  const cats = DB.getCategories();
+  if (cats.find(c => c.name.toLowerCase() === name.toLowerCase())) {
+    showToast('Category already exists', 'error'); return;
+  }
+  cats.push({ id: DB.uuid(), name, icon, color, type, custom: true });
+  DB.saveCategories(cats);
+  showToast('Category added: ' + name, 'success');
+  openManageCategories();
+}
+
+function deleteCategory(id) {
+  if (!confirm('Delete this category?')) return;
+  const cats = DB.getCategories().filter(c => c.id !== id);
+  DB.saveCategories(cats);
+  showToast('Category deleted', 'error');
+  openManageCategories();
+}
 
 // ── Modals ─────────────────────────────────────────────────────────────
 function openModal(title, bodyHTML, onSave) {
@@ -785,77 +885,127 @@ function initModal() {
 
 // ── Add/Edit Transaction ───────────────────────────────────────────────
 function openAddTransaction(editId = null) {
-  const cats = DB.getCategories();
-  const edit = editId ? DB.getTransactions().find(t => t.id === editId) : null;
-  const type = edit?.type || 'expense';
+  const cats  = DB.getCategories();
+  const cards = DB.getCards();
+  const edit  = editId ? DB.getTransactions().find(t => t.id === editId) : null;
+  const type  = edit ? edit.type : 'expense';
+  const lentSub = edit ? (edit.lentSub || 'lend') : 'lend';
+  const catsByType = t => cats.filter(c => c.type === t);
 
-  const catsByType = (t) => cats.filter(c => c.type === t);
+  const ccVisible = edit && edit.payment === 'credit-card';
+  const ccOpts = cards.length === 0
+    ? '<p style="color:var(--orange);font-size:13px">No cards added yet.</p>'
+    : '<select class="form-select" id="txn-card">' +
+        cards.map((c,i) => '<option value="'+c.id+'"'+(edit && edit.creditCardId===c.id ? ' selected' : (!edit && i===0 ? ' selected':''))+'>'+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+' (Avail: '+DB.fmtINR(c.limit-c.balance)+')</option>').join('') +
+      '</select>';
 
-  const body = `
-  <div class="type-tabs">
-    ${['expense','income','transfer','lent'].map(t=>`<button class="type-tab ${type===t?`active-${t}`:''}" onclick="switchTxnType('${t}')">${t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}
-  </div>
-  <div class="form-group">
-    <label class="form-label">Amount (₹)</label>
-    <input class="form-input" id="txn-amount" type="number" placeholder="0.00" value="${edit?.amount||''}" step="0.01" />
-  </div>
-  <div class="form-group">
-    <label class="form-label">Description</label>
-    <input class="form-input" id="txn-desc" type="text" placeholder="What was this for?" value="${edit?.description||''}" />
-  </div>
-  <div id="txn-cat-group" class="form-group" style="${type==='transfer'||type==='lent'?'display:none':''}">
-    <label class="form-label">Category</label>
-    <div class="cat-chips" id="cat-chips">
-      ${catsByType(type).map(c=>`<div class="cat-chip ${edit?.categoryId===c.id?'selected':''}" onclick="selectCat('${c.id}',this)"><div class="chip-icon">${c.icon}</div><div class="chip-name">${c.name.split(' ')[0]}</div></div>`).join('')}
-    </div>
-  </div>
-  <div id="txn-lent-group" class="form-group" style="${type!=='lent'?'display:none':''}">
-    <label class="form-label">Lent To</label>
-    <input class="form-input" id="txn-lent-to" type="text" placeholder="Person's name" value="${edit?.lentTo||''}" />
-  </div>
-  <div id="txn-transfer-group" class="form-group" style="${type!=='transfer'?'display:none':''}">
-    <label class="form-label">Transfer To</label>
-    <input class="form-input" id="txn-transfer-to" type="text" placeholder="Account or person" value="${edit?.transferTo||''}" />
-  </div>
-  <div class="form-row">
-    <div class="form-group">
-      <label class="form-label">Date</label>
-      <input class="form-input" id="txn-date" type="date" value="${edit?.date||DB.today()}" />
-    </div>
-    <div class="form-group">
-      <label class="form-label">Payment Method</label>
-      <select class="form-select" id="txn-payment" onchange="onPaymentChange(this.value)">
-        ${['cash','debit-card','credit-card','upi','net-banking','cheque','wallet'].map(p=>`<option value="${p}" ${edit?.payment===p?'selected':''}>${p.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>`).join('')}
-      </select>
-    </div>
-  </div>
-  </div>
-  <div id="cc-select-group" class="form-group" style="${edit?.payment==='credit-card' ? '' : 'display:none'}">
-    <label class="form-label">Credit Card</label>
-    ${DB.getCards().length === 0
-      ? '<p style="color:var(--orange);font-size:13px">⚠ No cards added. Go to Cards tab first.</p>'
-      : `<select class="form-select" id="txn-card">${DB.getCards().map((c,i)=>`<option value="${c.id}" ${edit?.creditCardId===c.id||(i===0&&!edit?.creditCardId)?'selected':''}>${c.bank} ···· ${c.last4} (Avail: ${DB.fmtINR(c.limit-c.balance)})</option>`).join('')}</select>`
-    }
-  </div>
-  <input type="hidden" id="txn-type" value="${type}" />
-  <input type="hidden" id="txn-cat" value="${edit?.categoryId||''}" />
-  <input type="hidden" id="txn-id" value="${edit?.id||''}" />
-  <div class="modal-footer">
-    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="saveTxn()">${edit?'Update':'Save'} Transaction</button>
-  </div>`;
+  const body =
+    '<div class="type-tabs">' +
+      ['expense','income','transfer','lent'].map(t =>
+        '<button class="type-tab'+(type===t?' active-'+t:'')+'" onclick="switchTxnType(\''+t+'\')">'+(t==='lent'?'Lent / Settle':t.charAt(0).toUpperCase()+t.slice(1))+'</button>'
+      ).join('') +
+    '</div>' +
+
+    // Lent sub-type selector
+    '<div id="lent-sub-group" class="form-group" style="'+(type==='lent'?'':'display:none')+'">' +
+      '<label class="form-label">Sub Type</label>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button id="lent-sub-lend" class="btn '+(lentSub==='lend'?'btn-primary':'btn-secondary')+' btn-sm" onclick="setLentSub(\'lend\')">🤝 Lend (giving money)</button>' +
+        '<button id="lent-sub-settle" class="btn '+(lentSub==='settle'?'btn-primary':'btn-secondary')+' btn-sm" onclick="setLentSub(\'settle\')">✅ Settle (recovering)</button>' +
+      '</div>' +
+    '</div>' +
+    '<input type="hidden" id="txn-lent-sub" value="'+lentSub+'" />' +
+
+    '<div class="form-group">' +
+      '<label class="form-label">Amount (₹)</label>' +
+      '<input class="form-input" id="txn-amount" type="number" placeholder="0.00" value="'+(edit?edit.amount:'')+'" step="0.01" />' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label class="form-label">Description</label>' +
+      '<input class="form-input" id="txn-desc" type="text" placeholder="What was this for?" value="'+(edit?edit.description||'':'')+'" />' +
+    '</div>' +
+
+    '<div id="txn-cat-group" class="form-group" style="'+(type==='transfer'||type==='lent'?'display:none':'')+'">' +
+      '<label class="form-label">Category</label>' +
+      '<div class="cat-chips" id="cat-chips">' +
+        catsByType(type).map(c =>
+          '<div class="cat-chip'+(edit && edit.categoryId===c.id?' selected':'')+'" onclick="selectCat(\''+c.id+'\',this)"><div class="chip-icon">'+c.icon+'</div><div class="chip-name">'+c.name.split(' ')[0]+'</div></div>'
+        ).join('') +
+      '</div>' +
+    '</div>' +
+
+    '<div id="txn-lent-group" class="form-group" style="'+(type==='lent'?'':'display:none')+'">' +
+      '<label class="form-label" id="lent-person-label">'+(lentSub==='settle'?'Recovering From':'Person\'s Name')+'</label>' +
+      '<input class="form-input" id="txn-lent-to" type="text" placeholder="Person\'s name" value="'+(edit?edit.lentTo||'':'')+'" />' +
+      '<div id="lent-suggestions" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px"></div>' +
+    '</div>' +
+
+    '<div id="txn-transfer-group" class="form-group" style="'+(type==='transfer'?'':'display:none')+'">' +
+      '<label class="form-label">Transfer To</label>' +
+      '<input class="form-input" id="txn-transfer-to" type="text" placeholder="Account or person" value="'+(edit?edit.transferTo||'':'')+'" />' +
+    '</div>' +
+
+    '<div class="form-row">' +
+      '<div class="form-group"><label class="form-label">Date</label>' +
+        '<input class="form-input" id="txn-date" type="date" value="'+(edit?edit.date:DB.today())+'" /></div>' +
+      '<div class="form-group"><label class="form-label">Payment Method</label>' +
+        '<select class="form-select" id="txn-payment" onchange="onPaymentChange(this.value)">' +
+          ['cash','debit-card','credit-card','upi','net-banking','cheque','wallet'].map(p =>
+            '<option value="'+p+'"'+(edit && edit.payment===p?' selected':'')+'>'+p.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase())+'</option>'
+          ).join('') +
+        '</select></div>' +
+    '</div>' +
+
+    '<div id="cc-select-group" class="form-group" style="'+(ccVisible?'':'display:none')+'">' +
+      '<label class="form-label">Select Credit Card</label>' +
+      ccOpts +
+    '</div>' +
+
+    '<input type="hidden" id="txn-type" value="'+type+'" />' +
+    '<input type="hidden" id="txn-cat" value="'+(edit?edit.categoryId||'':'')+'" />' +
+    '<input type="hidden" id="txn-id" value="'+(edit?edit.id||'':'')+'" />' +
+    '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="saveTxn()">'+(edit?'Update':'Save')+' Transaction</button>' +
+    '</div>';
 
   openModal(edit ? 'Edit Transaction' : 'Add Transaction', body);
 
-  // Auto-select first cat
-  if (!edit) {
+  // Auto-select first category
+  if (!edit && type !== 'transfer' && type !== 'lent') {
     const first = catsByType(type)[0];
     if (first) {
       document.getElementById('txn-cat').value = first.id;
       document.querySelector('.cat-chip')?.classList.add('selected');
     }
   }
+
+  // Populate lent name suggestions
+  if (type === 'lent') populateLentSuggestions();
 }
+
+function setLentSub(sub) {
+  document.getElementById('txn-lent-sub').value = sub;
+  document.getElementById('lent-sub-lend').className   = 'btn ' + (sub==='lend'?'btn-primary':'btn-secondary') + ' btn-sm';
+  document.getElementById('lent-sub-settle').className  = 'btn ' + (sub==='settle'?'btn-primary':'btn-secondary') + ' btn-sm';
+  document.getElementById('lent-person-label').textContent = sub==='settle' ? 'Recovering From' : "Person's Name";
+  populateLentSuggestions(sub);
+}
+
+function populateLentSuggestions(sub) {
+  const container = document.getElementById('lent-suggestions');
+  if (!container) return;
+  const txns = DB.getTransactions();
+  // Unique names of people with pending lent (for settle) or all lent people
+  const people = [...new Set(
+    txns.filter(t => t.type === 'lent' && t.lentTo && (sub === 'settle' ? !t.lentSettled : true))
+        .map(t => t.lentTo)
+  )];
+  container.innerHTML = people.map(name =>
+    '<button class="filter-chip" style="font-size:12px" onclick="document.getElementById(\'txn-lent-to\').value=\''+name+'\'">'+name+'</button>'
+  ).join('');
+}
+
 
 function openEditTransaction(id) { openAddTransaction(id); }
 
@@ -867,22 +1017,29 @@ function onPaymentChange(val) {
 function switchTxnType(type) {
   document.getElementById('txn-type').value = type;
   document.querySelectorAll('.type-tab').forEach(b => {
-    b.className = `type-tab${b.textContent.toLowerCase()===type?' active-'+type:''}`;
+    const t = b.textContent.toLowerCase().replace(' / settle','').replace(' / ','').replace('settle','settle');
+    const match = b.textContent.toLowerCase().includes(type) || b.textContent.toLowerCase() === type;
+    b.className = 'type-tab' + (match ? ' active-' + type : '');
   });
-  const catGroup = document.getElementById('txn-cat-group');
-  const lentGroup = document.getElementById('txn-lent-group');
-  const transferGroup = document.getElementById('txn-transfer-group');
-  catGroup.style.display = (type==='transfer'||type==='lent') ? 'none' : '';
-  lentGroup.style.display = type==='lent' ? '' : 'none';
-  transferGroup.style.display = type==='transfer' ? '' : 'none';
+  document.getElementById('txn-cat-group').style.display   = (type==='transfer'||type==='lent') ? 'none' : '';
+  document.getElementById('txn-lent-group').style.display   = type==='lent' ? '' : 'none';
+  document.getElementById('txn-transfer-group').style.display = type==='transfer' ? '' : 'none';
+  const lentSubGroup = document.getElementById('lent-sub-group');
+  if (lentSubGroup) lentSubGroup.style.display = type==='lent' ? '' : 'none';
+
+  if (type === 'lent') populateLentSuggestions();
 
   if (type !== 'transfer' && type !== 'lent') {
     const cats = DB.getCategories().filter(c => c.type === type);
     const chips = document.getElementById('cat-chips');
-    chips.innerHTML = cats.map(c => `<div class="cat-chip" onclick="selectCat('${c.id}',this)"><div class="chip-icon">${c.icon}</div><div class="chip-name">${c.name.split(' ')[0]}</div></div>`).join('');
-    if (cats[0]) {
-      document.getElementById('txn-cat').value = cats[0].id;
-      chips.querySelector('.cat-chip')?.classList.add('selected');
+    if (chips) {
+      chips.innerHTML = cats.map(c =>
+        '<div class="cat-chip" onclick="selectCat(\'' + c.id + '\',this)"><div class="chip-icon">' + c.icon + '</div><div class="chip-name">' + c.name.split(' ')[0] + '</div></div>'
+      ).join('');
+      if (cats[0]) {
+        document.getElementById('txn-cat').value = cats[0].id;
+        chips.querySelector('.cat-chip')?.classList.add('selected');
+      }
     }
   }
 }
@@ -894,33 +1051,88 @@ function selectCat(id, el) {
 }
 
 function saveTxn() {
-  const amount = parseFloat(document.getElementById('txn-amount').value);
-  const type   = document.getElementById('txn-type').value;
+  const amount  = parseFloat(document.getElementById('txn-amount').value);
+  const type    = document.getElementById('txn-type').value;
   if (!amount || amount <= 0) { showToast('Enter a valid amount','error'); return; }
 
-  const cats = DB.getCategories();
+  const cats    = DB.getCategories();
+  const payment = document.getElementById('txn-payment').value;
+  const lentSub = document.getElementById('txn-lent-sub')?.value || 'lend';
+  const lentTo  = document.getElementById('txn-lent-to')?.value.trim() || '';
+
+  // Credit card: save which card was used and update its balance
+  const creditCardId = payment === 'credit-card'
+    ? (document.getElementById('txn-card')?.value || '') : '';
+  if (payment === 'credit-card' && creditCardId) {
+    const cards = DB.getCards().map(c =>
+      c.id === creditCardId ? { ...c, balance: +(c.balance + amount).toFixed(2) } : c
+    );
+    DB.saveCards(cards);
+  }
+
   let catId = document.getElementById('txn-cat').value;
   if (type === 'transfer') catId = cats.find(c=>c.type==='transfer')?.id || catId;
   if (type === 'lent')     catId = cats.find(c=>c.type==='lent')?.id || catId;
 
   const id = document.getElementById('txn-id').value;
+
+  // For settle sub-type: mark as income recovery and settle open lents for that person
+  if (type === 'lent' && lentSub === 'settle') {
+    if (!lentTo) { showToast('Enter the person name', 'error'); return; }
+    let txns = DB.getTransactions();
+    let remaining = amount;
+    // Settle oldest pending lents for this person first
+    txns = txns.map(t => {
+      if (t.type === 'lent' && !t.lentSettled && t.lentTo.trim().toLowerCase() === lentTo.toLowerCase() && remaining > 0) {
+        if (remaining >= t.amount) { remaining -= t.amount; return { ...t, lentSettled: true }; }
+        // Partial settle: split the transaction
+        remaining = 0;
+        return { ...t, lentSettled: true };
+      }
+      return t;
+    });
+    // Record income transaction for recovered amount
+    txns.unshift({
+      id: DB.uuid(), type: 'income', amount,
+      categoryId: cats.find(c=>c.name==='Other Income')?.id || 'c14',
+      description: 'Recovered from ' + lentTo,
+      date: document.getElementById('txn-date').value,
+      payment, creditCardId: '', lentTo, transferTo: '',
+      lentSettled: false, createdAt: new Date().toISOString(),
+    });
+    DB.saveTransactions(txns);
+    closeModal();
+    renderTab(currentTab);
+    showToast('Settlement recorded — ₹' + amount.toLocaleString('en-IN') + ' recovered from ' + lentTo, 'success');
+    return;
+  }
+
   const t = {
-    id:          id || DB.uuid(),
+    id:           id || DB.uuid(),
     type,
     amount,
-    categoryId:  catId,
-    description: document.getElementById('txn-desc').value,
-    date:        document.getElementById('txn-date').value,
-    payment:     document.getElementById('txn-payment').value,
-    lentTo:      document.getElementById('txn-lent-to')?.value || '',
-    transferTo:  document.getElementById('txn-transfer-to')?.value || '',
-    lentSettled: false,
-    createdAt:   new Date().toISOString(),
+    categoryId:   catId,
+    description:  document.getElementById('txn-desc').value,
+    date:         document.getElementById('txn-date').value,
+    payment,
+    creditCardId,
+    lentTo,
+    lentSub:      type === 'lent' ? lentSub : '',
+    transferTo:   document.getElementById('txn-transfer-to')?.value || '',
+    lentSettled:  false,
+    createdAt:    new Date().toISOString(),
   };
 
   let txns = DB.getTransactions();
   if (id) {
     const existing = txns.find(x => x.id === id);
+    // If editing a CC transaction, revert old card balance first
+    if (existing && existing.payment === 'credit-card' && existing.creditCardId) {
+      const cards = DB.getCards().map(c =>
+        c.id === existing.creditCardId ? { ...c, balance: Math.max(0, c.balance - existing.amount) } : c
+      );
+      DB.saveCards(cards);
+    }
     t.lentSettled = existing?.lentSettled || false;
     txns = txns.map(x => x.id === id ? t : x);
   } else {
@@ -939,10 +1151,73 @@ function deleteTransaction(id) {
   showToast('Deleted', 'error');
 }
 
-function settleLent(id) {
-  DB.saveTransactions(DB.getTransactions().map(t => t.id===id ? {...t, lentSettled:true} : t));
+function settleLent(id) { openSettleByPerson(null, id); }
+
+// Global for settle modal (avoids quote-in-onclick issues)
+let _currentSettlePerson = '';
+
+function openSettleByPerson(personName, specificId) {
+  const txns = DB.getTransactions();
+  if (specificId) {
+    const t = txns.find(x => x.id === specificId);
+    personName = t ? (t.lentTo || 'Unknown') : personName;
+  }
+  _currentSettlePerson = personName || '';
+  const pending = txns
+    .filter(t => t.type === 'lent' && !t.lentSettled &&
+                 (t.lentTo||'Unknown').toLowerCase() === (personName||'').toLowerCase())
+    .reduce((s,t) => s + t.amount, 0);
+
+  document.getElementById('modal-title').textContent = 'Settle — ' + personName;
+  document.getElementById('modal-body').innerHTML =
+    '<div style="text-align:center;margin-bottom:16px">' +
+      '<div style="font-size:13px;color:var(--text3)">Pending from <strong>' + personName + '</strong></div>' +
+      '<div style="font-size:28px;font-weight:700;color:var(--orange)">' + DB.fmtFull(pending) + '</div>' +
+    '</div>' +
+    '<div class="form-group"><label class="form-label">Amount Recovered (₹)</label>' +
+      '<input class="form-input" id="settle-person-amt" type="number" value="' + pending + '" />' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;margin-bottom:8px">' +
+      '<button class="btn btn-secondary btn-sm" onclick="setSettleAmt(' + pending + ')">Full Amount</button>' +
+    '</div>' +
+    '<div class="form-group"><label class="form-label">Recovery Date</label>' +
+      '<input class="form-input" id="settle-person-date" type="date" value="' + DB.today() + '" />' +
+    '</div>' +
+    '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="confirmSettleByPerson()">Record Recovery</button>' +
+    '</div>';
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function confirmSettleByPerson() {
+  const personName = _currentSettlePerson;
+  const amt  = parseFloat(document.getElementById('settle-person-amt').value);
+  const date = document.getElementById('settle-person-date').value;
+  if (!amt || amt <= 0) { showToast('Enter a valid amount', 'error'); return; }
+
+  let txns = DB.getTransactions();
+  let remaining = amt;
+  txns = txns.map(t => {
+    if (t.type === 'lent' && !t.lentSettled &&
+        (t.lentTo||'Unknown').toLowerCase() === personName.toLowerCase() && remaining > 0) {
+      remaining = Math.max(0, remaining - t.amount);
+      return { ...t, lentSettled: true };
+    }
+    return t;
+  });
+  const cats = DB.getCategories();
+  txns.unshift({
+    id: DB.uuid(), type: 'income', amount: amt,
+    categoryId: cats.find(c=>c.name==='Other Income')?.id || 'c14',
+    description: 'Recovered from ' + personName,
+    date, payment: 'cash', creditCardId: '', lentTo: personName,
+    transferTo: '', lentSettled: false, createdAt: new Date().toISOString(),
+  });
+  DB.saveTransactions(txns);
+  closeModal();
   renderTab(currentTab);
-  showToast('Marked as settled ✓', 'success');
+  showToast('Recovery of ' + DB.fmtINR(amt) + ' from ' + personName + ' recorded ✓', 'success');
 }
 
 // ── Add Loan ───────────────────────────────────────────────────────────
@@ -1014,7 +1289,7 @@ function markEMIPaid(loanId, n) {
   // Add transaction
   const emi = DB.calcEMI(loan.principal, loan.rate, loan.months);
   const txns = DB.getTransactions();
-  txns.unshift({ id:DB.uuid(), type:'expense', amount:emi, categoryId:DB.getCategories().find(c=>c.name==='Rent')?.id||'c08', description:`EMI - ${loan.name}`, date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
+  txns.unshift({ id:DB.uuid(), type:'expense', amount:emi, categoryId:DB.getCategories().find(c=>c.id==='c17'||c.name==='Loan EMI')?.id||'c17', description:`EMI - ${loan.name}`, date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
   DB.saveTransactions(txns);
   renderTab('loans');
   showToast('EMI marked as paid ✓', 'success');
@@ -1127,7 +1402,7 @@ function settleCard(id) {
   DB.saveCards(cards);
   // Add transaction
   const txns = DB.getTransactions();
-  txns.unshift({ id:DB.uuid(), type:'expense', amount:amt, categoryId:DB.getCategories().find(c=>c.name==='Utilities')?.id||'c04', description:'Credit Card Payment', date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
+  txns.unshift({ id:DB.uuid(), type:'expense', amount:amt, categoryId:DB.getCategories().find(c=>c.id==='c18'||c.name==='Credit Card')?.id||'c18', description:'Credit Card Payment', date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
   DB.saveTransactions(txns);
   closeModal();
   renderTab('cards');
@@ -1283,14 +1558,14 @@ function saveGoal() {
   if (id) goals = goals.map(x => x.id===id ? g : x); else goals.push(g);
   DB.saveGoals(goals);
   closeModal();
-  renderTab('budget');
+  renderTab('goals');
   showToast(id?'Goal updated ✓':'Goal added ✓','success');
 }
 
 function deleteGoal(id) {
   if (!confirm('Delete this goal?')) return;
   DB.saveGoals(DB.getGoals().filter(g => g.id !== id));
-  renderTab('budget');
+  renderTab('goals');
   showToast('Goal deleted','error');
 }
 
@@ -1316,10 +1591,10 @@ function addToGoal(id) {
   DB.saveGoals(goals);
   // Add transaction
   const txns = DB.getTransactions();
-  txns.unshift({ id:DB.uuid(), type:'expense', amount:amt, categoryId:DB.getCategories().find(c=>c.name==='Other Income')?.id||'c14', description:`Savings: ${g.name}`, date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
+  txns.unshift({ id:DB.uuid(), type:'expense', amount:amt, categoryId:DB.getCategories().find(c=>c.id==='c19'||c.name==='Savings Goal')?.id||'c19', description:'Savings: '+g.name, date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
   DB.saveTransactions(txns);
   closeModal();
-  renderTab('budget');
+  renderTab('goals');
   showToast('Funds added ✓', 'success');
 }
 

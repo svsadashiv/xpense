@@ -437,3 +437,95 @@ input:checked + .toggle-slider::before { transform: translateX(20px); }
 .badge-orange { background: var(--orange-light); color: var(--orange); }
 .search-input { width: 100%; max-width: 320px; padding: 9px 14px 9px 38px; border-radius: var(--radius-sm); border: 1.5px solid var(--border); background: var(--bg); font-family: var(--font); font-size: 14px; outline: none; transition: border-color .15s; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239AA3B8' stroke-width='2'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: 12px center; }
 .search-input:focus { border-color: var(--blue); background-color: white; }
+
+/* ── Mobile Optimizations ──────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* Content padding */
+  .content { padding: 12px; }
+  .page-header { margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+  .page-title { font-size: 20px; }
+
+  /* KPI grid: 2 columns on mobile */
+  .kpi-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .kpi-card { padding: 14px; }
+  .kpi-value { font-size: 18px; }
+
+  /* Hero card */
+  .hero-card { padding: 20px; }
+  .hero-amount { font-size: 28px; }
+  .hero-row { gap: 14px; flex-wrap: wrap; }
+
+  /* Charts */
+  .chart-grid { grid-template-columns: 1fr; gap: 12px; }
+  .chart-wrap { height: 180px; }
+
+  /* Summary grid */
+  .summary-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  /* Period selector wraps */
+  .period-selector { flex-wrap: wrap; }
+  .period-btn { padding: 5px 10px; font-size: 12px; }
+
+  /* Transactions */
+  .txn-row { padding: 10px 12px; gap: 10px; }
+  .txn-icon { width: 34px; height: 34px; font-size: 14px; }
+  .txn-name { font-size: 13px; }
+  .txn-amount { font-size: 13px; }
+  .txn-actions { opacity: 1; } /* always show on mobile */
+  .icon-btn { width: 26px; height: 26px; font-size: 12px; }
+
+  /* Filter bar wraps */
+  .filter-bar { gap: 6px; }
+  .filter-chip { padding: 5px 10px; font-size: 12px; }
+
+  /* Budget rows */
+  .budget-row { padding: 10px 12px; gap: 10px; }
+  .loan-stats { grid-template-columns: 1fr 1fr; }
+
+  /* Modal */
+  .modal { max-height: 85vh; margin: 0 8px; border-radius: 16px; }
+  .modal-body { padding: 16px; }
+  .modal-header { padding: 16px 16px 12px; }
+  .form-row { grid-template-columns: 1fr; }
+
+  /* Settings */
+  .settings-row { flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px; }
+  .settings-row > div:first-child { width: 100%; }
+
+  /* Card visual */
+  .card-grid { grid-template-columns: 1fr 1fr; }
+
+  /* Topbar spacing */
+  .topbar-logo { font-size: 16px; }
+}
+
+@media (max-width: 480px) {
+  .kpi-grid { grid-template-columns: 1fr 1fr; }
+  .summary-grid { grid-template-columns: 1fr; }
+  .hero-amount { font-size: 24px; }
+  .kpi-value { font-size: 16px; }
+
+  /* Sidebar full width overlay */
+  .sidebar { width: 85vw; }
+
+  /* Compact transaction rows */
+  .txn-meta { font-size: 11px; }
+  .section-date { font-size: 11px; }
+  
+  /* Full width buttons in modals */
+  .modal-footer { flex-direction: column; }
+  .modal-footer .btn { width: 100%; justify-content: center; }
+
+  /* Period buttons compact */
+  .period-btn { padding: 4px 8px; font-size: 11px; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+}
+
+/* Tap targets — min 44px on touch devices */
+@media (hover: none) {
+  .num-btn  { min-width: 56px; min-height: 56px; }
+  .nav-item { padding: 12px; min-height: 44px; }
+  .btn      { min-height: 40px; }
+  .filter-chip { min-height: 36px; }
+  .icon-btn { min-width: 36px; min-height: 36px; }
+}
