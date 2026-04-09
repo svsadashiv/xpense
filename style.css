@@ -394,22 +394,92 @@ input:checked + .toggle-slider::before { transform: translateX(20px); }
 .lent-row:last-child { border-bottom: none; }
 
 /* ── Responsive ────────────────────────────────────────────────────── */
+
+/* Sidebar overlay backdrop */
+.sidebar-backdrop {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(15,22,41,.45);
+  backdrop-filter: blur(2px);
+  z-index: 99;
+}
+.sidebar-backdrop.active { display: block; }
+
 @media (max-width: 768px) {
-  .sidebar { transform: translateX(-100%); }
+  /* Hide sidebar by default, slide in as overlay */
+  .sidebar {
+    transform: translateX(-100%);
+    position: fixed;
+    top: 0; left: 0;
+    height: 100vh;
+    width: 280px;
+    z-index: 100;
+    box-shadow: 4px 0 24px rgba(15,22,41,.15);
+  }
   .sidebar.mobile-open { transform: translateX(0); }
+
+  /* Show topbar */
   .topbar { display: flex; }
-  .content { margin-left: 0; padding: 16px; }
-  .chart-grid { grid-template-columns: 1fr; }
+
+  /* Content fills full width — NO margin for sidebar */
+  .content {
+    margin-left: 0;
+    padding: 16px;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* Main app is a column: topbar on top, content below */
+  #main-app {
+    flex-direction: column;
+  }
+
+  .chart-grid { grid-template-columns: 1fr; gap: 12px; }
   .form-row { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .summary-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .loan-stats { grid-template-columns: repeat(2, 1fr); }
+  .hero-amount { font-size: 28px; }
+  .hero-card { padding: 20px; }
+  .page-title { font-size: 20px; }
+  .page-header { margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+
+  /* Transaction rows — always show actions on mobile */
+  .txn-actions { opacity: 1; }
+  .txn-row { padding: 10px 12px; gap: 10px; }
+
+  /* Modal — full width on small screens */
+  .modal { max-height: 88vh; border-radius: 16px 16px 0 0; }
+  .modal-overlay { align-items: flex-end; padding: 0; }
+
+  /* Settings rows stack vertically */
+  .settings-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+
+  /* Period selector wraps */
+  .period-selector { flex-wrap: wrap; gap: 4px; }
+  .period-btn { padding: 5px 10px; font-size: 12px; }
+  .filter-chip { padding: 5px 10px; font-size: 12px; }
+}
+
+@media (max-width: 480px) {
   .kpi-grid { grid-template-columns: 1fr 1fr; }
   .summary-grid { grid-template-columns: 1fr; }
-  .loan-stats { grid-template-columns: repeat(2, 1fr); }
-  .hero-amount { font-size: 32px; }
-}
-@media (max-width: 480px) {
-  .kpi-grid { grid-template-columns: 1fr; }
+  .hero-amount { font-size: 24px; }
+  .hero-row { gap: 12px; flex-wrap: wrap; }
+  .content { padding: 12px; }
   .numpad { grid-template-columns: repeat(3, 64px); gap: 10px; }
   .num-btn { width: 64px; height: 64px; }
+  .modal-footer { flex-direction: column; }
+  .modal-footer .btn { width: 100%; justify-content: center; }
+}
+
+/* Minimum tap target sizes for touch */
+@media (hover: none) {
+  .nav-item { min-height: 48px; }
+  .btn { min-height: 44px; }
+  .filter-chip { min-height: 36px; }
+  .num-btn { min-width: 60px; min-height: 60px; }
+  .icon-btn { min-width: 36px; min-height: 36px; }
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────── */

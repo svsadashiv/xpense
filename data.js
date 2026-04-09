@@ -50,7 +50,11 @@ const DB = {
   },
 
   // ── Getters ────────────────────────────────────────────────────────
-  getTransactions() { return this.load(this.KEYS.transactions); },
+  getTransactions() {
+    const txns = this.load(this.KEYS.transactions);
+    // Clean floating-point drifted amounts on every read
+    return txns.map(t => ({ ...t, amount: Math.round(parseFloat(t.amount) * 100) / 100 }));
+  },
   getCategories()   {
     const saved = this.load(this.KEYS.categories, null);
     if (!saved) return this.DEFAULT_CATEGORIES;
@@ -102,15 +106,16 @@ const DB = {
 
   fmtINR(n) {
     const abs = Math.abs(n);
+    const inr2 = { style:'currency', currency:'INR', minimumFractionDigits: 2, maximumFractionDigits: 2 };
     let str;
     if (abs >= 1e7) str = '₹' + (n / 1e7).toFixed(2) + 'Cr';
     else if (abs >= 1e5) str = '₹' + (n / 1e5).toFixed(2) + 'L';
-    else str = new Intl.NumberFormat('en-IN', { style:'currency', currency:'INR', maximumFractionDigits: 0 }).format(n);
+    else str = new Intl.NumberFormat('en-IN', inr2).format(n);
     return str;
   },
 
   fmtFull(n) {
-    return new Intl.NumberFormat('en-IN', { style:'currency', currency:'INR' }).format(n);
+    return new Intl.NumberFormat('en-IN', { style:'currency', currency:'INR', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
   },
 
   fmtDate(iso) {
@@ -124,9 +129,13 @@ const DB = {
 
   // ── Loan calculator ────────────────────────────────────────────────
   calcEMI(principal, annualRate, months) {
-    if (!annualRate) return principal / months;
-    const r = annualRate / 12 / 100;
-    return principal * r * Math.pow(1+r, months) / (Math.pow(1+r, months) - 1);
+    let emi;
+    if (!annualRate) emi = principal / months;
+    else {
+      const r = annualRate / 12 / 100;
+      emi = principal * r * Math.pow(1+r, months) / (Math.pow(1+r, months) - 1);
+    }
+    return +(emi.toFixed(2));
   },
 
   amortSchedule(principal, annualRate, months, startDate) {
@@ -220,6 +229,13 @@ const DB = {
       const existingIds = new Set(existing.map(t => t.id));
       const merged = [...existing, ...data.transactions.filter(t => !existingIds.has(t.id))];
       this.saveTransactions(merged);
+    }
+    if (data.categories && data.categories.length) {
+      // Merge imported custom categories with current list
+      const current = this.getCategories();
+      const currentIds = new Set(current.map(c => c.id));
+      const toAdd = data.categories.filter(c => c.custom && !currentIds.has(c.id));
+      if (toAdd.length) this.saveCategories([...current, ...toAdd]);
     }
     if (data.cards) {
       const existing = this.getCards();

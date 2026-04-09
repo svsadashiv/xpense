@@ -89,19 +89,36 @@ function showApp() {
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────
+function openMobileNav() {
+  document.getElementById('sidebar').classList.add('mobile-open');
+  document.getElementById('sidebar-backdrop').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeMobileNav() {
+  document.getElementById('sidebar').classList.remove('mobile-open');
+  document.getElementById('sidebar-backdrop').classList.remove('active');
+  document.body.style.overflow = '';
+}
+
 function initNav() {
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
       switchTab(btn.dataset.tab);
-      // Close mobile sidebar
-      document.getElementById('sidebar').classList.remove('mobile-open');
+      closeMobileNav();
     });
   });
-  document.getElementById('lock-btn').addEventListener('click', lockApp);
+  document.getElementById('lock-btn').addEventListener('click', () => {
+    closeMobileNav();
+    lockApp();
+  });
   document.getElementById('menu-btn').addEventListener('click', () => {
-    document.getElementById('sidebar').classList.toggle('mobile-open');
+    const isOpen = document.getElementById('sidebar').classList.contains('mobile-open');
+    isOpen ? closeMobileNav() : openMobileNav();
   });
   document.getElementById('add-btn-top').addEventListener('click', () => openAddTransaction());
+  // Close sidebar when backdrop is clicked
+  document.getElementById('sidebar-backdrop').addEventListener('click', closeMobileNav);
 }
 
 function switchTab(tab) {
@@ -374,6 +391,7 @@ function formatDateHeader(iso) {
 // ── Loans ──────────────────────────────────────────────────────────────
 function renderLoans() {
   const loans = DB.getLoans();
+  const txns = DB.getTransactions();
   const totalPrincipal = loans.reduce((s,l)=>s+l.principal,0);
   const totalEMI = loans.reduce((s,l)=>s+DB.calcEMI(l.principal,l.rate,l.months),0);
 
@@ -390,14 +408,14 @@ function renderLoans() {
   </div>` : ''}
 
   ${loans.length === 0 ? `<div class="empty-state"><div class="empty-icon">🏦</div><p>No active loans. Add your first loan to track EMIs.</p></div>` :
-    loans.map(l => loanCardHTML(l)).join('')}`;
+    loans.map(l => loanCardHTML(l, txns)).join('')}`;
 }
 
-function loanCardHTML(l) {
+function loanCardHTML(l, txns) {
   const emi = DB.calcEMI(l.principal, l.rate, l.months);
   const totalPayable = emi * l.months;
   const totalInterest = totalPayable - l.principal;
-  const paid = l.paidEMIs || [];
+  const paid = getLoanPaidEmiNumbers(l, txns);
   const pct  = Math.min((paid.length / l.months) * 100, 100);
   const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
   const nextEMI  = schedule.find(s => !paid.includes(s.n));
@@ -458,7 +476,8 @@ function afterLoans() {}
 
 // ── Cards ──────────────────────────────────────────────────────────────
 function renderCards() {
-  const cards = DB.getCards();
+  const cats = DB.getCategories();
+  const cards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
   return `
   <div class="page-header">
     <div><div class="page-title">Credit Cards</div></div>
@@ -469,17 +488,18 @@ function renderCards() {
 }
 
 function creditCardHTML(c) {
-  const util = Math.min((c.balance / c.limit) * 100, 100);
+  const due = c.dueBalance || 0;
+  const util = Math.min((due / c.limit) * 100, 100);
   const utilColor = util < 30 ? 'var(--green)' : util < 70 ? 'var(--orange)' : 'var(--red)';
   const isOpen = expandedCards.has(c.id);
-  const overdue = new Date(c.dueDate) < new Date() && c.balance > 0;
+  const overdue = new Date(c.dueDate) < new Date() && due > 0;
 
   const detail = isOpen ? `
     <div style="padding:16px;border-top:1px solid var(--border)">
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
-        <div><div class="card-stat-label">Balance</div><div class="card-stat-value text-red">${DB.fmtFull(c.balance)}</div></div>
+        <div><div class="card-stat-label">Balance</div><div class="card-stat-value text-red">${DB.fmtFull(due)}</div></div>
         <div><div class="card-stat-label">Limit</div><div class="card-stat-value">${DB.fmtFull(c.limit)}</div></div>
-        <div><div class="card-stat-label">Available</div><div class="card-stat-value text-green">${DB.fmtFull(c.limit - c.balance)}</div></div>
+        <div><div class="card-stat-label">Available</div><div class="card-stat-value text-green">${DB.fmtFull(c.limit - due)}</div></div>
       </div>
       <div style="margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text3);margin-bottom:4px">
@@ -488,7 +508,7 @@ function creditCardHTML(c) {
         <div class="util-bar"><div class="util-fill" style="width:${util}%;background:${utilColor}"></div></div>
       </div>
       <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
-        📅 Due ${DB.fmtDate(c.dueDate)} &nbsp;·&nbsp; Min ₹${(c.minPayment||0).toLocaleString('en-IN')} &nbsp;·&nbsp; ${c.rate||36}% p.a.
+        📅 Due ${DB.fmtDate(c.dueDate)} &nbsp;·&nbsp; Min ${DB.fmtFull(c.minPayment||0)} &nbsp;·&nbsp; ${c.rate||36}% p.a.
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-primary" style="flex:1" onclick="openSettleCard('${c.id}')">💳 Pay Now</button>
@@ -511,12 +531,12 @@ function creditCardHTML(c) {
           <div style="text-align:right">
             ${overdue ? '<div style="background:rgba(255,200,0,.3);padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;margin-bottom:6px">⚠ OVERDUE</div>' : ''}
             <div style="font-size:11px;opacity:.7">Due Balance</div>
-            <div style="font-size:18px;font-weight:700">${DB.fmtINR(c.balance)}</div>
+            <div style="font-size:18px;font-weight:700">${DB.fmtINR(due)}</div>
           </div>
         </div>
         <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px">
           <span><span style="opacity:.7">Limit </span><strong>${DB.fmtINR(c.limit)}</strong></span>
-          <span><span style="opacity:.7">Available </span><strong>${DB.fmtINR(c.limit - c.balance)}</strong></span>
+          <span><span style="opacity:.7">Available </span><strong>${DB.fmtINR(c.limit - due)}</strong></span>
           <span><span style="opacity:.7">Due </span><strong>${DB.fmtDate(c.dueDate)}</strong></span>
         </div>
         <div style="height:4px;background:rgba(255,255,255,.25);border-radius:2px;overflow:hidden">
@@ -597,8 +617,8 @@ function budgetRowHTML(b, cats) {
   </div>`;
 }
 
-function goalCardHTML(g) {
-  const pct = Math.min((g.current / g.target) * 100, 100);
+function goalCardHTML(g, currentSaved) {
+  const pct = Math.min((currentSaved / g.target) * 100, 100);
   return `
   <div class="card goal-card">
     <div class="goal-header">
@@ -616,7 +636,7 @@ function goalCardHTML(g) {
       <div class="goal-progress-bar"><div class="goal-fill" style="width:${pct}%;background:${g.color}"></div></div>
       <div class="goal-pct" style="color:${g.color}">${pct.toFixed(1)}%</div>
     </div>
-    <div class="goal-amounts"><span>${DB.fmtINR(g.current)} saved</span><span>${DB.fmtINR(g.target - g.current)} remaining</span></div>
+    <div class="goal-amounts"><span>${DB.fmtINR(currentSaved)} saved</span><span>${DB.fmtINR(g.target - currentSaved)} remaining</span></div>
     <button class="btn btn-secondary btn-sm mt-16" style="width:100%" onclick="openAddToGoal('${g.id}')">+ Add Funds</button>
   </div>`;
 }
@@ -626,10 +646,11 @@ function afterBudget() {}
 // ── Goals ──────────────────────────────────────────────────────────────
 function renderGoals() {
   const goals = DB.getGoals();
+  const txns = DB.getTransactions();
   const header = '<div class="page-header"><div><div class="page-title">Savings Goals</div></div><button class="btn btn-primary" onclick="openAddGoal()">+ New Goal</button></div>';
   const body = goals.length === 0
     ? '<div class="empty-state"><div class="empty-icon">🎯</div><p>No savings goals yet.<br>Set a target and track your progress.</p></div>'
-    : goals.map(g => goalCardHTML(g)).join('');
+    : goals.map(g => goalCardHTML(g, getGoalCurrentFromTransactions(g, txns))).join('');
   return header + body;
 }
 
@@ -883,20 +904,139 @@ function initModal() {
   document.getElementById('modal-overlay').addEventListener('click', e => { if (e.target === document.getElementById('modal-overlay')) closeModal(); });
 }
 
+// ── Credit card: charge vs pay-down (from bank/UPI etc.) ───────────────
+function getCreditCardCategoryId(cats) {
+  return cats.find(c => c.id === 'c18' || c.name === 'Credit Card')?.id;
+}
+function roundMoney(n) {
+  // Simple 2dp rounding - no epsilon, no paise conversion
+  const v = parseFloat(n);
+  return isNaN(v) ? 0 : Math.round(v * 100) / 100;
+}
+function toPaise(n) { return Math.round(parseFloat(n) * 100) || 0; }
+function fromPaise(p) { return Math.round(p) / 100; }
+function isCreditCardCharge(t) {
+  return !!(t && t.payment === 'credit-card' && t.creditCardId);
+}
+function isCreditCardPaydown(t, cats) {
+  const cc = getCreditCardCategoryId(cats);
+  return !!(t && t.type === 'expense' && t.creditCardId && t.payment !== 'credit-card' && cc && t.categoryId === cc);
+}
+function cardDueFromTransactions(card, txns, cats) {
+  const opening = toPaise(card.balance || 0);
+  const charged = txns.filter(t => isCreditCardCharge(t) && t.creditCardId === card.id).reduce((s,t)=>s+toPaise(t.amount), 0);
+  const paid = txns.filter(t => isCreditCardPaydown(t, cats) && t.creditCardId === card.id).reduce((s,t)=>s+toPaise(t.amount), 0);
+  return fromPaise(Math.max(0, opening + charged - paid));
+}
+function cardsWithDue(cards, txns, cats) {
+  return cards.map(c => ({ ...c, dueBalance: cardDueFromTransactions(c, txns, cats) }));
+}
+function normText(s) {
+  return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+function autoLinkTransaction(t, ctx) {
+  const out = { ...t };
+  const desc = String(out.description || '').trim();
+  const descNorm = normText(desc);
+  const ccCatId = getCreditCardCategoryId(ctx.cats);
+  const savingsCatId = ctx.cats.find(c => c.id === 'c19' || c.name === 'Savings Goal')?.id;
+
+  const savingsMatch = desc.match(/^Savings:\s*(.+)$/i);
+  if (savingsMatch) {
+    const goalName = normText(savingsMatch[1]);
+    const goal = ctx.goals.find(g => normText(g.name) === goalName);
+    if (goal) {
+      out.goalId = goal.id;
+      out.txnKind = 'goal-add';
+      if (out.type === 'expense' && savingsCatId) out.categoryId = savingsCatId;
+    }
+  }
+
+  const emiMatch = desc.match(/^EMI\s*-\s*(.+)$/i);
+  if (emiMatch) {
+    const loanName = normText(emiMatch[1]);
+    const loan = ctx.loans.find(l => normText(l.name) === loanName);
+    if (loan) {
+      out.loanId = loan.id;
+      out.txnKind = 'loan-emi';
+      if (!Number.isFinite(+out.emiNo)) {
+        const count = ctx.txns.filter(x => x.id !== out.id && x.txnKind === 'loan-emi' && x.loanId === loan.id).length;
+        out.emiNo = count + 1;
+      }
+    }
+  }
+
+  const isCardPayment = out.type === 'expense' && out.payment !== 'credit-card' && ccCatId && out.categoryId === ccCatId;
+  if (isCardPayment && !out.creditCardId) {
+    const card = ctx.cards.find(c => {
+      const last4 = String(c.last4 || '').trim();
+      return (last4 && descNorm.includes(last4)) || descNorm.includes(normText(c.name)) || descNorm.includes(normText(c.bank));
+    });
+    if (card) out.creditCardId = card.id;
+  }
+
+  return out;
+}
+function backfillTransactionLinks() {
+  const txns = DB.getTransactions();
+  if (!txns.length) return;
+  const ctx = { goals: DB.getGoals(), loans: DB.getLoans(), cards: DB.getCards(), cats: DB.getCategories(), txns };
+  let changed = false;
+  const next = txns.map(t => {
+    const linked = autoLinkTransaction(t, ctx);
+    if (JSON.stringify(linked) !== JSON.stringify(t)) changed = true;
+    return linked;
+  });
+  if (changed) DB.saveTransactions(next);
+}
+function getLoanPaidEmiNumbers(loan, txns) {
+  const linked = txns
+    .filter(t => t.txnKind === 'loan-emi' && t.loanId === loan.id && Number.isFinite(+t.emiNo))
+    .map(t => +t.emiNo);
+  if (linked.length) return [...new Set(linked)].sort((a,b)=>a-b);
+  if ((loan.paidEMIs || []).length) return [...new Set(loan.paidEMIs)].sort((a,b)=>a-b);
+  const legacyCount = txns.filter(t => t.type === 'expense' && (t.description || '') === ('EMI - ' + loan.name)).length;
+  return Array.from({ length: legacyCount }, (_, i) => i + 1);
+}
+function getGoalCurrentFromTransactions(goal, txns) {
+  const base = +(goal.baseCurrent ?? goal.current ?? 0);
+  const linkedAdds = txns
+    .filter(t => t.txnKind === 'goal-add' && t.goalId === goal.id)
+    .reduce((s,t) => s + (+t.amount || 0), 0);
+  return +(base + linkedAdds).toFixed(2);
+}
+function syncPaydownCardGroup() {
+  const el = document.getElementById('txn-paydown-card-group');
+  const pay = document.getElementById('txn-payment');
+  const typ = document.getElementById('txn-type');
+  const cat = document.getElementById('txn-cat');
+  if (!el || !pay || !typ || !cat) return;
+  const ccCatId = getCreditCardCategoryId(DB.getCategories());
+  const show = typ.value === 'expense' && pay.value !== 'credit-card' && ccCatId && cat.value === ccCatId;
+  el.style.display = show ? '' : 'none';
+}
+
 // ── Add/Edit Transaction ───────────────────────────────────────────────
 function openAddTransaction(editId = null) {
   const cats  = DB.getCategories();
-  const cards = DB.getCards();
+  const cards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
   const edit  = editId ? DB.getTransactions().find(t => t.id === editId) : null;
   const type  = edit ? edit.type : 'expense';
   const lentSub = edit ? (edit.lentSub || 'lend') : 'lend';
   const catsByType = t => cats.filter(c => c.type === t);
+  const paydownSelected = edit && isCreditCardPaydown(edit, cats) ? edit.creditCardId : '';
 
   const ccVisible = edit && edit.payment === 'credit-card';
   const ccOpts = cards.length === 0
     ? '<p style="color:var(--orange);font-size:13px">No cards added yet.</p>'
     : '<select class="form-select" id="txn-card">' +
-        cards.map((c,i) => '<option value="'+c.id+'"'+(edit && edit.creditCardId===c.id ? ' selected' : (!edit && i===0 ? ' selected':''))+'>'+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+' (Avail: '+DB.fmtINR(c.limit-c.balance)+')</option>').join('') +
+        cards.map((c,i) => '<option value="'+c.id+'"'+(edit && edit.payment === 'credit-card' && edit.creditCardId===c.id ? ' selected' : (!edit && i===0 ? ' selected':''))+'>'+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+' (Avail: '+DB.fmtINR(c.limit-c.dueBalance)+')</option>').join('') +
+      '</select>';
+  const paydownOpts = cards.length === 0
+    ? '<p style="color:var(--orange);font-size:13px">No cards added yet.</p>'
+    : '<select class="form-select" id="txn-paydown-card">' +
+        '<option value="">— Not paying toward a card —</option>' +
+        cards.map(c => '<option value="'+c.id+'"'+(paydownSelected===c.id?' selected':'')+'>'+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+'</option>').join('') +
       '</select>';
 
   const body =
@@ -918,11 +1058,14 @@ function openAddTransaction(editId = null) {
 
     '<div class="form-group">' +
       '<label class="form-label">Amount (₹)</label>' +
-      '<input class="form-input" id="txn-amount" type="number" placeholder="0.00" value="'+(edit?edit.amount:'')+'" step="0.01" />' +
+      '<input class="form-input" id="txn-amount" type="number" placeholder="0.00" value="'+(edit && edit.amount != null ? parseFloat(edit.amount).toFixed(2) : '')+'" step="0.01" />' +
     '</div>' +
     '<div class="form-group">' +
       '<label class="form-label">Description</label>' +
       '<input class="form-input" id="txn-desc" type="text" placeholder="What was this for?" value="'+(edit?edit.description||'':'')+'" />' +
+      '<div style="margin-top:6px;font-size:12px;color:var(--text3)">' +
+        'Tip: use <strong>Savings: Goal Name</strong> or <strong>EMI - Loan Name</strong> for auto-linking.' +
+      '</div>' +
     '</div>' +
 
     '<div id="txn-cat-group" class="form-group" style="'+(type==='transfer'||type==='lent'?'display:none':'')+'">' +
@@ -961,6 +1104,11 @@ function openAddTransaction(editId = null) {
       ccOpts +
     '</div>' +
 
+    '<div id="txn-paydown-card-group" class="form-group" style="display:none">' +
+      '<label class="form-label">Pay toward card (reduces card balance)</label>' +
+      paydownOpts +
+    '</div>' +
+
     '<input type="hidden" id="txn-type" value="'+type+'" />' +
     '<input type="hidden" id="txn-cat" value="'+(edit?edit.categoryId||'':'')+'" />' +
     '<input type="hidden" id="txn-id" value="'+(edit?edit.id||'':'')+'" />' +
@@ -982,6 +1130,7 @@ function openAddTransaction(editId = null) {
 
   // Populate lent name suggestions
   if (type === 'lent') populateLentSuggestions();
+  syncPaydownCardGroup();
 }
 
 function setLentSub(sub) {
@@ -1012,6 +1161,7 @@ function openEditTransaction(id) { openAddTransaction(id); }
 function onPaymentChange(val) {
   const g = document.getElementById('cc-select-group');
   if (g) g.style.display = val === 'credit-card' ? '' : 'none';
+  syncPaydownCardGroup();
 }
 
 function switchTxnType(type) {
@@ -1042,12 +1192,14 @@ function switchTxnType(type) {
       }
     }
   }
+  syncPaydownCardGroup();
 }
 
 function selectCat(id, el) {
   document.querySelectorAll('.cat-chip').forEach(c => c.classList.remove('selected'));
   el.classList.add('selected');
   document.getElementById('txn-cat').value = id;
+  syncPaydownCardGroup();
 }
 
 function saveTxn() {
@@ -1060,21 +1212,20 @@ function saveTxn() {
   const lentSub = document.getElementById('txn-lent-sub')?.value || 'lend';
   const lentTo  = document.getElementById('txn-lent-to')?.value.trim() || '';
 
-  // Credit card: save which card was used and update its balance
-  const creditCardId = payment === 'credit-card'
-    ? (document.getElementById('txn-card')?.value || '') : '';
-  if (payment === 'credit-card' && creditCardId) {
-    const cards = DB.getCards().map(c =>
-      c.id === creditCardId ? { ...c, balance: +(c.balance + amount).toFixed(2) } : c
-    );
-    DB.saveCards(cards);
-  }
-
   let catId = document.getElementById('txn-cat').value;
   if (type === 'transfer') catId = cats.find(c=>c.type==='transfer')?.id || catId;
   if (type === 'lent')     catId = cats.find(c=>c.type==='lent')?.id || catId;
 
   const id = document.getElementById('txn-id').value;
+  const existing = id ? DB.getTransactions().find(x => x.id === id) : null;
+  const ccCatId = getCreditCardCategoryId(cats);
+
+  let creditCardId = payment === 'credit-card'
+    ? (document.getElementById('txn-card')?.value || '') : '';
+  if (type === 'expense' && payment !== 'credit-card' && ccCatId && catId === ccCatId) {
+    const pd = document.getElementById('txn-paydown-card')?.value?.trim() || '';
+    creditCardId = pd || (existing && isCreditCardPaydown(existing, cats) ? existing.creditCardId : '') || '';
+  }
 
   // For settle sub-type: mark as income recovery and settle open lents for that person
   if (type === 'lent' && lentSub === 'settle') {
@@ -1103,14 +1254,15 @@ function saveTxn() {
     DB.saveTransactions(txns);
     closeModal();
     renderTab(currentTab);
-    showToast('Settlement recorded — ₹' + amount.toLocaleString('en-IN') + ' recovered from ' + lentTo, 'success');
+    showToast('Settlement recorded — ' + DB.fmtFull(amount) + ' recovered from ' + lentTo, 'success');
     return;
   }
 
   const t = {
+    ...(existing || {}),
     id:           id || DB.uuid(),
     type,
-    amount,
+    amount:       Math.round(amount * 100) / 100,
     categoryId:   catId,
     description:  document.getElementById('txn-desc').value,
     date:         document.getElementById('txn-date').value,
@@ -1120,23 +1272,16 @@ function saveTxn() {
     lentSub:      type === 'lent' ? lentSub : '',
     transferTo:   document.getElementById('txn-transfer-to')?.value || '',
     lentSettled:  false,
-    createdAt:    new Date().toISOString(),
+    createdAt:    existing?.createdAt || new Date().toISOString(),
   };
-
   let txns = DB.getTransactions();
+  const ctx = { goals: DB.getGoals(), loans: DB.getLoans(), cards: DB.getCards(), cats, txns };
+  const linkedTxn = autoLinkTransaction(t, ctx);
   if (id) {
-    const existing = txns.find(x => x.id === id);
-    // If editing a CC transaction, revert old card balance first
-    if (existing && existing.payment === 'credit-card' && existing.creditCardId) {
-      const cards = DB.getCards().map(c =>
-        c.id === existing.creditCardId ? { ...c, balance: Math.max(0, c.balance - existing.amount) } : c
-      );
-      DB.saveCards(cards);
-    }
-    t.lentSettled = existing?.lentSettled || false;
-    txns = txns.map(x => x.id === id ? t : x);
+    linkedTxn.lentSettled = existing?.lentSettled || false;
+    txns = txns.map(x => x.id === id ? linkedTxn : x);
   } else {
-    txns.unshift(t);
+    txns.unshift(linkedTxn);
   }
   DB.saveTransactions(txns);
   closeModal();
@@ -1282,14 +1427,14 @@ function markEMIPaid(loanId, n) {
   const loans = DB.getLoans();
   const loan = loans.find(l => l.id === loanId);
   if (!loan) return;
-  if (!loan.paidEMIs) loan.paidEMIs = [];
-  if (!loan.paidEMIs.includes(n)) loan.paidEMIs.push(n);
-  DB.saveLoans(loans);
 
-  // Add transaction
-  const emi = DB.calcEMI(loan.principal, loan.rate, loan.months);
   const txns = DB.getTransactions();
-  txns.unshift({ id:DB.uuid(), type:'expense', amount:emi, categoryId:DB.getCategories().find(c=>c.id==='c17'||c.name==='Loan EMI')?.id||'c17', description:`EMI - ${loan.name}`, date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
+  if (txns.some(t => t.txnKind === 'loan-emi' && t.loanId === loanId && +t.emiNo === +n)) {
+    showToast('This EMI is already recorded', 'error');
+    return;
+  }
+  const emi = DB.calcEMI(loan.principal, loan.rate, loan.months);
+  txns.unshift({ id:DB.uuid(), type:'expense', amount:emi, categoryId:DB.getCategories().find(c=>c.id==='c17'||c.name==='Loan EMI')?.id||'c17', description:`EMI - ${loan.name}`, date:DB.today(), payment:'net-banking', loanId, emiNo:n, txnKind:'loan-emi', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
   DB.saveTransactions(txns);
   renderTab('loans');
   showToast('EMI marked as paid ✓', 'success');
@@ -1359,7 +1504,7 @@ function saveCard() {
   const card = {
     id: id || DB.uuid(), name, bank: document.getElementById('cc-bank').value,
     last4: document.getElementById('cc-last4').value, limit,
-    balance: parseFloat(document.getElementById('cc-balance').value)||0,
+    balance: fromPaise(toPaise(parseFloat(document.getElementById('cc-balance').value)||0)),
     minPayment: parseFloat(document.getElementById('cc-min').value)||0,
     rate: parseFloat(document.getElementById('cc-rate').value)||36,
     dueDate: document.getElementById('cc-due').value,
@@ -1375,16 +1520,19 @@ function saveCard() {
 }
 
 function openSettleCard(id) {
-  const card = DB.getCards().find(c => c.id === id);
+  const cats = DB.getCategories();
+  const txns = DB.getTransactions();
+  const card = cardsWithDue(DB.getCards(), txns, cats).find(c => c.id === id);
   if (!card) return;
+  const due = card.dueBalance || 0;
   const body = `
   <div style="text-align:center;margin-bottom:16px">
     <div style="font-size:13px;color:var(--text3)">Outstanding Balance</div>
-    <div style="font-size:32px;font-weight:700;color:var(--red)">${DB.fmtFull(card.balance)}</div>
+    <div style="font-size:32px;font-weight:700;color:var(--red)">${DB.fmtFull(due)}</div>
   </div>
-  <div class="form-group"><label class="form-label">Payment Amount (₹)</label><input class="form-input" id="settle-amt" type="number" placeholder="${card.balance}" value="${card.balance}" /></div>
+  <div class="form-group"><label class="form-label">Payment Amount (₹)</label><input class="form-input" id="settle-amt" type="number" placeholder="${due}" value="${due}" /></div>
   <div style="display:flex;gap:8px;margin-bottom:16px">
-    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('settle-amt').value='${card.balance}'">Full Balance</button>
+    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('settle-amt').value='${due}'">Full Balance</button>
     <button class="btn btn-secondary btn-sm" onclick="document.getElementById('settle-amt').value='${card.minPayment}'">Minimum</button>
   </div>
   <div class="modal-footer">
@@ -1397,12 +1545,9 @@ function openSettleCard(id) {
 function settleCard(id) {
   const amt = parseFloat(document.getElementById('settle-amt').value);
   if (!amt || amt <= 0) { showToast('Enter valid amount', 'error'); return; }
-  let cards = DB.getCards();
-  cards = cards.map(c => c.id===id ? {...c, balance:Math.max(c.balance-amt,0)} : c);
-  DB.saveCards(cards);
   // Add transaction
   const txns = DB.getTransactions();
-  txns.unshift({ id:DB.uuid(), type:'expense', amount:amt, categoryId:DB.getCategories().find(c=>c.id==='c18'||c.name==='Credit Card')?.id||'c18', description:'Credit Card Payment', date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
+  txns.unshift({ id:DB.uuid(), type:'expense', amount:roundMoney(amt), categoryId:DB.getCategories().find(c=>c.id==='c18'||c.name==='Credit Card')?.id||'c18', description:'Credit Card Payment', date:DB.today(), payment:'net-banking', creditCardId:id, lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
   DB.saveTransactions(txns);
   closeModal();
   renderTab('cards');
@@ -1553,7 +1698,8 @@ function saveGoal() {
   const target = parseFloat(document.getElementById('g-target').value);
   if (!name || !target) { showToast('Fill required fields', 'error'); return; }
   const id = document.getElementById('g-id').value;
-  const g = { id:id||DB.uuid(), name, target, current:parseFloat(document.getElementById('g-current').value)||0, targetDate:document.getElementById('g-date').value, icon:document.getElementById('g-icon').value, color:document.getElementById('g-color').value };
+  const baseCurrent = parseFloat(document.getElementById('g-current').value)||0;
+  const g = { id:id||DB.uuid(), name, target, current:baseCurrent, baseCurrent, targetDate:document.getElementById('g-date').value, icon:document.getElementById('g-icon').value, color:document.getElementById('g-color').value };
   let goals = DB.getGoals();
   if (id) goals = goals.map(x => x.id===id ? g : x); else goals.push(g);
   DB.saveGoals(goals);
@@ -1585,13 +1731,11 @@ function openAddToGoal(id) {
 function addToGoal(id) {
   const amt = parseFloat(document.getElementById('add-amt').value);
   if (!amt || amt <= 0) { showToast('Enter valid amount', 'error'); return; }
-  let goals = DB.getGoals();
-  const g = goals.find(x => x.id === id);
-  if (g) g.current += amt;
-  DB.saveGoals(goals);
+  const g = DB.getGoals().find(x => x.id === id);
+  if (!g) { showToast('Goal not found', 'error'); return; }
   // Add transaction
   const txns = DB.getTransactions();
-  txns.unshift({ id:DB.uuid(), type:'expense', amount:amt, categoryId:DB.getCategories().find(c=>c.id==='c19'||c.name==='Savings Goal')?.id||'c19', description:'Savings: '+g.name, date:DB.today(), payment:'net-banking', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
+  txns.unshift({ id:DB.uuid(), type:'expense', amount:roundMoney(amt), categoryId:DB.getCategories().find(c=>c.id==='c19'||c.name==='Savings Goal')?.id||'c19', description:'Savings: '+g.name, date:DB.today(), payment:'net-banking', goalId:id, txnKind:'goal-add', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
   DB.saveTransactions(txns);
   closeModal();
   renderTab('goals');
@@ -1705,6 +1849,7 @@ function showToast(msg, type = '') {
 
 // ── Init ───────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  backfillTransactionLinks();
   initNav();
   initModal();
   if (DB.hasPin()) {
