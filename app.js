@@ -166,30 +166,37 @@ function renderDashboard() {
     const d = new Date(t.date);
     return d.getMonth() === m && d.getFullYear() === y;
   });
-  const income  = thisMonth.filter(t => t.type === 'income').reduce((s,t) => s+t.amount, 0);
-  const expense = thisMonth.filter(t => t.type==='expense'||t.type==='lent'||t.type==='transfer').reduce((s,t) => s+t.amount, 0);
-  const net     = income - expense;
+  // Settlements (income with lentTo) are NOT real income — they cancel lent outflow
+  const income       = thisMonth.filter(t => t.type==='income' && !t.lentTo).reduce((s,t) => s+t.amount, 0);
+  const expenses     = thisMonth.filter(t => t.type==='expense' || t.type==='transfer').reduce((s,t) => s+t.amount, 0);
+  const lentGiven    = thisMonth.filter(t => t.type==='lent').reduce((s,t) => s+t.amount, 0);
+  const lentRecovered= thisMonth.filter(t => t.type==='income' && t.lentTo).reduce((s,t) => s+t.amount, 0);
+  const netLentPending = Math.max(0, lentGiven - lentRecovered);
+  const expense      = expenses; // alias kept for display
+  const net          = income - expenses - netLentPending;
   const catTotals = DB.catTotals(thisMonth);
   const recent  = [...txns].sort((a,b) => b.date.localeCompare(a.date)).slice(0,6);
   const cats    = DB.getCategories();
 
-  // Group pending lent by person
+  // Pending = sum(lent for person) − sum(income tagged to person). No flags needed.
   const allTxns2 = DB.getTransactions();
-  const pendingTxns = allTxns2.filter(t => t.type === 'lent' && !t.lentSettled);
   const pendingByPerson = {};
-  pendingTxns.forEach(t => {
-    const name = t.lentTo || 'Unknown';
-    pendingByPerson[name] = (pendingByPerson[name] || 0) + t.amount;
+  allTxns2.forEach(t => {
+    if (t.type === 'lent' && t.lentTo) {
+      pendingByPerson[t.lentTo] = (pendingByPerson[t.lentTo] || 0) + t.amount;
+    } else if (t.type === 'income' && t.lentTo) {
+      pendingByPerson[t.lentTo] = (pendingByPerson[t.lentTo] || 0) - t.amount;
+    }
   });
+  Object.keys(pendingByPerson).forEach(k => { if (pendingByPerson[k] <= 0) delete pendingByPerson[k]; });
 
   let pendingHTML = '';
   if (Object.keys(pendingByPerson).length) {
     const personRows = Object.entries(pendingByPerson).map(([name, amt]) => {
       const safeName = name.replace(/\\/g,'').replace(/'/g,'\\x27');
-      const cnt = pendingTxns.filter(t=>(t.lentTo||'Unknown')===name).length;
       return '<div class="lent-row">' +
         '<span style="font-weight:600">👤 ' + name + '</span>' +
-        '<span style="font-size:12px;color:#92400E">' + cnt + ' txn(s)</span>' +
+        '<span style="font-size:12px;color:#92400E">Pending</span>' +
         '<span style="font-weight:700;color:#D97706">' + DB.fmtINR(amt) + '</span>' +
         '<button class="btn btn-sm btn-success" onclick="openSettleByPerson(\'' + safeName + '\')">Settle</button>' +
         '</div>';
@@ -229,8 +236,8 @@ function renderDashboard() {
     <div class="hero-amount">${DB.fmtFull(net)}</div>
     <div class="hero-row">
       <div class="hero-stat"><div class="hero-stat-label">↓ Income</div><div class="hero-stat-value">${DB.fmtINR(income)}</div></div>
-      <div class="hero-stat"><div class="hero-stat-label">↑ Outflow</div><div class="hero-stat-value">${DB.fmtINR(expense)}</div></div>
-      ${Object.keys(pendingByPerson).length > 0 ? `<div class="hero-stat"><div class="hero-stat-label">🤝 Pending</div><div class="hero-stat-value">${DB.fmtINR(Object.values(pendingByPerson).reduce((a,b)=>a+b,0))}</div></div>` : ''}
+      <div class="hero-stat"><div class="hero-stat-label">↑ Outflow</div><div class="hero-stat-value">${DB.fmtINR(expenses + lentGiven)}</div></div>
+      ${netLentPending > 0 ? `<div class="hero-stat"><div class="hero-stat-label">🤝 Lent</div><div class="hero-stat-value">${DB.fmtINR(netLentPending)}</div></div>` : ''}
     </div>
   </div>
 
@@ -243,7 +250,7 @@ function renderDashboard() {
     </div>
     <div class="card">
       <div class="card-title">By Category</div>
-      ${catBars || '<p class="text-muted" style="padding:20px 0;text-align:center;font-size:14px">No expenses this month</p>'}
+      ${catBars || '<p class="text-muted" style="padding:20px 0;text-align:center;font-size:14px">No outflow this month</p>'}
     </div>
   </div>
 
@@ -288,11 +295,19 @@ function renderTransactions() {
   if (txnPayment) txns = txns.filter(t => t.payment === txnPayment);
   txns.sort((a,b) => b.date.localeCompare(a.date));
 
-  const income   = txns.filter(t => t.type === 'income').reduce((s,t) => s+t.amount, 0);
-  const expense  = txns.filter(t => t.type === 'expense').reduce((s,t) => s+t.amount, 0);
-  const lent     = txns.filter(t => t.type === 'lent' && !t.lentSettled).reduce((s,t) => s+t.amount, 0);
-  const transfer = txns.filter(t => t.type === 'transfer').reduce((s,t) => s+t.amount, 0);
-  const net      = income - expense - lent - transfer;
+  // Settlements (income with lentTo) cancel lent outflow — not counted as income
+  const income        = txns.filter(t => t.type === 'income' && !t.lentTo).reduce((s,t) => s+t.amount, 0);
+  const expense       = txns.filter(t => t.type === 'expense').reduce((s,t) => s+t.amount, 0);
+  const transfer      = txns.filter(t => t.type === 'transfer').reduce((s,t) => s+t.amount, 0);
+  const lentGiven     = txns.filter(t => t.type === 'lent').reduce((s,t) => s+t.amount, 0);
+  const lentRecovered = txns.filter(t => t.type === 'income' && t.lentTo).reduce((s,t) => s+t.amount, 0);
+  const lent          = Math.max(0, lentGiven - lentRecovered);
+  const net           = income - expense - transfer - lent;
+  // All-time pending: always computed from full transaction list regardless of filter
+  const allTxns = DB.getTransactions();
+  const allTimeLentGiven     = allTxns.filter(t => t.type === 'lent').reduce((s,t) => s+t.amount, 0);
+  const allTimeLentRecovered = allTxns.filter(t => t.type === 'income' && t.lentTo).reduce((s,t) => s+t.amount, 0);
+  const allTimePending       = Math.max(0, allTimeLentGiven - allTimeLentRecovered);
 
   const groups = {};
   txns.forEach(t => (groups[t.date] = groups[t.date] || []).push(t));
@@ -316,7 +331,8 @@ function renderTransactions() {
         '<div class="txn-list">'+groups[date].map(t => txnRowHTML(t, cats, true)).join('')+'</div>'
       ).join('');
 
-  const lentBadge = lent > 0 ? '<div class="badge badge-orange" style="padding:6px 12px">🤝 Lent '+DB.fmtINR(lent)+'</div>' : '';
+  const lentBadge     = lent > 0 ? '<div class="badge badge-orange" style="padding:6px 12px">🤝 Lent (period) '+DB.fmtINR(lent)+'</div>' : '';
+  const pendingBadge  = allTimePending > 0 ? '<div class="badge badge-orange" style="padding:6px 12px;background:#FEF3C7;color:#B45309">⏳ Pending (all time) '+DB.fmtINR(allTimePending)+'</div>' : '';
 
   return '<div class="page-header">' +
     '<div><div class="page-title">Transactions</div><div class="page-subtitle">'+txns.length+' transactions</div></div>' +
@@ -337,9 +353,10 @@ function renderTransactions() {
 
     '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">' +
       '<div class="badge badge-green" style="padding:6px 12px">↓ Income '+DB.fmtINR(income)+'</div>' +
-      '<div class="badge badge-red" style="padding:6px 12px">↑ Outflow '+DB.fmtINR(expense+lent+transfer)+'</div>' +
+      '<div class="badge badge-red" style="padding:6px 12px">↑ Outflow '+DB.fmtINR(expense+transfer+lent)+'</div>' +
       '<div class="badge badge-blue" style="padding:6px 12px">Net '+DB.fmtINR(net)+'</div>' +
       lentBadge +
+      pendingBadge +
     '</div>' +
 
     txnRows;
@@ -359,7 +376,7 @@ function txnRowHTML(t, cats, showActions = false) {
     t.payment ? t.payment.replace(/-/g,' ') : '',
     t.lentTo ? `→ ${t.lentTo}` : '',
     t.transferTo ? `→ ${t.transferTo}` : '',
-    isLent && t.lentSettled ? '✓ Settled' : (isLent ? '⏳ Pending' : ''),
+    '',
   ].filter(Boolean).join(' · ');
 
   return `
@@ -671,14 +688,22 @@ function renderSummary() {
     txns = txns.filter(t => new Date(t.date).getFullYear()===now.getFullYear());
   }
 
-  const income   = txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-  const expenseOnly = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
-  const lentOut  = txns.filter(t=>t.type==='lent'&&!t.lentSettled).reduce((s,t)=>s+t.amount,0);
-  const transfer = txns.filter(t=>t.type==='transfer').reduce((s,t)=>s+t.amount,0);
-  const expense  = expenseOnly + transfer;
-  const pending  = lentOut;
-  const net      = income - expense - lentOut;
-  const rate     = income > 0 ? (net/income*100) : 0;
+  // Settlements (income with lentTo) cancel lent outflow — not counted as income
+  const income         = txns.filter(t=>t.type==='income'&&!t.lentTo).reduce((s,t)=>s+t.amount,0);
+  const expenseOnly    = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+  const transfer       = txns.filter(t=>t.type==='transfer').reduce((s,t)=>s+t.amount,0);
+  const lentGivenAll   = txns.filter(t=>t.type==='lent').reduce((s,t)=>s+t.amount,0);
+  const lentRecoveredAll = txns.filter(t=>t.type==='income'&&t.lentTo).reduce((s,t)=>s+t.amount,0);
+  const lentOut        = Math.max(0, lentGivenAll - lentRecoveredAll);
+  const expense        = expenseOnly + transfer;
+  const pending        = lentOut;
+  const net            = income - expense - lentOut;
+  const rate           = income > 0 ? (net/income*100) : 0;
+  // All-time pending: always computed from full transaction list regardless of period filter
+  const allTxnsFull        = DB.getTransactions();
+  const allTimeLentGivenSum     = allTxnsFull.filter(t=>t.type==='lent').reduce((s,t)=>s+t.amount,0);
+  const allTimeLentRecoveredSum = allTxnsFull.filter(t=>t.type==='income'&&t.lentTo).reduce((s,t)=>s+t.amount,0);
+  const allTimePendingSum       = Math.max(0, allTimeLentGivenSum - allTimeLentRecoveredSum);
   const catData = DB.catTotals(txns);
 
   return `
@@ -698,7 +723,8 @@ function renderSummary() {
     ${kpiHTML('Expenses',DB.fmtFull(expense),'↑','#FEE4E2','var(--red)')}
     ${kpiHTML('Net Savings',DB.fmtFull(net),'💰', net>=0?'#D1FAE5':'#FEE4E2', net>=0?'var(--green)':'var(--red)')}
     ${kpiHTML('Savings Rate',rate.toFixed(1)+'%','%','#EEF2FF','var(--blue)')}
-    ${pending>0?kpiHTML('Pending Lent',DB.fmtFull(pending),'🤝','#FEF3C7','var(--orange)'):''}
+    ${lentOut>0?kpiHTML('Lent (period)',DB.fmtFull(lentOut),'🤝','#FEF3C7','var(--orange)'):''}
+    ${allTimePendingSum>0?kpiHTML('Pending (all time)',DB.fmtFull(allTimePendingSum),'⏳','#FFF7ED','#C2410C'):''}
   </div>
 
   <div class="chart-grid" style="margin-bottom:24px">
@@ -720,7 +746,7 @@ function renderSummary() {
 
   <div class="card">
     <div class="card-title">Category Breakdown</div>
-    ${catData.length === 0 ? '<p class="text-muted" style="font-size:14px;padding:12px 0">No expense data</p>' :
+    ${catData.length === 0 ? '<p class="text-muted" style="font-size:14px;padding:12px 0">No outflow data</p>' :
       catData.map(({cat,total}) => `
       <div class="cat-drill ${drillCat===cat.id?'open':''}" onclick="toggleDrill('${cat.id}')">
         <div class="cat-drill-header">
@@ -1042,19 +1068,11 @@ function openAddTransaction(editId = null) {
   const body =
     '<div class="type-tabs">' +
       ['expense','income','transfer','lent'].map(t =>
-        '<button class="type-tab'+(type===t?' active-'+t:'')+'" onclick="switchTxnType(\''+t+'\')">'+(t==='lent'?'Lent / Settle':t.charAt(0).toUpperCase()+t.slice(1))+'</button>'
+        '<button class="type-tab'+(type===t?' active-'+t:'')+'" onclick="switchTxnType(\''+t+'\')">'+(t==='lent'?'Lend 🤝':t.charAt(0).toUpperCase()+t.slice(1))+'</button>'
       ).join('') +
     '</div>' +
 
-    // Lent sub-type selector
-    '<div id="lent-sub-group" class="form-group" style="'+(type==='lent'?'':'display:none')+'">' +
-      '<label class="form-label">Sub Type</label>' +
-      '<div style="display:flex;gap:8px">' +
-        '<button id="lent-sub-lend" class="btn '+(lentSub==='lend'?'btn-primary':'btn-secondary')+' btn-sm" onclick="setLentSub(\'lend\')">🤝 Lend (giving money)</button>' +
-        '<button id="lent-sub-settle" class="btn '+(lentSub==='settle'?'btn-primary':'btn-secondary')+' btn-sm" onclick="setLentSub(\'settle\')">✅ Settle (recovering)</button>' +
-      '</div>' +
-    '</div>' +
-    '<input type="hidden" id="txn-lent-sub" value="'+lentSub+'" />' +
+    '<input type="hidden" id="txn-lent-sub" value="lend" />' +
 
     '<div class="form-group">' +
       '<label class="form-label">Amount (₹)</label>' +
@@ -1078,7 +1096,7 @@ function openAddTransaction(editId = null) {
     '</div>' +
 
     '<div id="txn-lent-group" class="form-group" style="'+(type==='lent'?'':'display:none')+'">' +
-      '<label class="form-label" id="lent-person-label">'+(lentSub==='settle'?'Recovering From':'Person\'s Name')+'</label>' +
+      '<label class="form-label" id="lent-person-label">Person\'s Name</label>' +
       '<input class="form-input" id="txn-lent-to" type="text" placeholder="Person\'s name" value="'+(edit?edit.lentTo||'':'')+'" />' +
       '<div id="lent-suggestions" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px"></div>' +
     '</div>' +
@@ -1133,13 +1151,6 @@ function openAddTransaction(editId = null) {
   syncPaydownCardGroup();
 }
 
-function setLentSub(sub) {
-  document.getElementById('txn-lent-sub').value = sub;
-  document.getElementById('lent-sub-lend').className   = 'btn ' + (sub==='lend'?'btn-primary':'btn-secondary') + ' btn-sm';
-  document.getElementById('lent-sub-settle').className  = 'btn ' + (sub==='settle'?'btn-primary':'btn-secondary') + ' btn-sm';
-  document.getElementById('lent-person-label').textContent = sub==='settle' ? 'Recovering From' : "Person's Name";
-  populateLentSuggestions(sub);
-}
 
 function populateLentSuggestions(sub) {
   const container = document.getElementById('lent-suggestions');
@@ -1147,7 +1158,7 @@ function populateLentSuggestions(sub) {
   const txns = DB.getTransactions();
   // Unique names of people with pending lent (for settle) or all lent people
   const people = [...new Set(
-    txns.filter(t => t.type === 'lent' && t.lentTo && (sub === 'settle' ? !t.lentSettled : true))
+    txns.filter(t => t.type === 'lent' && t.lentTo)
         .map(t => t.lentTo)
   )];
   container.innerHTML = people.map(name =>
@@ -1174,8 +1185,6 @@ function switchTxnType(type) {
   document.getElementById('txn-cat-group').style.display   = (type==='transfer'||type==='lent') ? 'none' : '';
   document.getElementById('txn-lent-group').style.display   = type==='lent' ? '' : 'none';
   document.getElementById('txn-transfer-group').style.display = type==='transfer' ? '' : 'none';
-  const lentSubGroup = document.getElementById('lent-sub-group');
-  if (lentSubGroup) lentSubGroup.style.display = type==='lent' ? '' : 'none';
 
   if (type === 'lent') populateLentSuggestions();
 
@@ -1227,36 +1236,7 @@ function saveTxn() {
     creditCardId = pd || (existing && isCreditCardPaydown(existing, cats) ? existing.creditCardId : '') || '';
   }
 
-  // For settle sub-type: mark as income recovery and settle open lents for that person
-  if (type === 'lent' && lentSub === 'settle') {
-    if (!lentTo) { showToast('Enter the person name', 'error'); return; }
-    let txns = DB.getTransactions();
-    let remaining = amount;
-    // Settle oldest pending lents for this person first
-    txns = txns.map(t => {
-      if (t.type === 'lent' && !t.lentSettled && t.lentTo.trim().toLowerCase() === lentTo.toLowerCase() && remaining > 0) {
-        if (remaining >= t.amount) { remaining -= t.amount; return { ...t, lentSettled: true }; }
-        // Partial settle: split the transaction
-        remaining = 0;
-        return { ...t, lentSettled: true };
-      }
-      return t;
-    });
-    // Record income transaction for recovered amount
-    txns.unshift({
-      id: DB.uuid(), type: 'income', amount,
-      categoryId: cats.find(c=>c.name==='Other Income')?.id || 'c14',
-      description: 'Recovered from ' + lentTo,
-      date: document.getElementById('txn-date').value,
-      payment, creditCardId: '', lentTo, transferTo: '',
-      lentSettled: false, createdAt: new Date().toISOString(),
-    });
-    DB.saveTransactions(txns);
-    closeModal();
-    renderTab(currentTab);
-    showToast('Settlement recorded — ' + DB.fmtFull(amount) + ' recovered from ' + lentTo, 'success');
-    return;
-  }
+  // Settlement is done via the Settle button on the dashboard only.
 
   const t = {
     ...(existing || {}),
@@ -1269,16 +1249,15 @@ function saveTxn() {
     payment,
     creditCardId,
     lentTo,
-    lentSub:      type === 'lent' ? lentSub : '',
+    lentSub:      '',
     transferTo:   document.getElementById('txn-transfer-to')?.value || '',
-    lentSettled:  false,
     createdAt:    existing?.createdAt || new Date().toISOString(),
   };
   let txns = DB.getTransactions();
   const ctx = { goals: DB.getGoals(), loans: DB.getLoans(), cards: DB.getCards(), cats, txns };
   const linkedTxn = autoLinkTransaction(t, ctx);
   if (id) {
-    linkedTxn.lentSettled = existing?.lentSettled || false;
+    // pending is computed from transactions — no lentSettled flag needed
     txns = txns.map(x => x.id === id ? linkedTxn : x);
   } else {
     txns.unshift(linkedTxn);
@@ -1308,10 +1287,9 @@ function openSettleByPerson(personName, specificId) {
     personName = t ? (t.lentTo || 'Unknown') : personName;
   }
   _currentSettlePerson = personName || '';
-  const pending = txns
-    .filter(t => t.type === 'lent' && !t.lentSettled &&
-                 (t.lentTo||'Unknown').toLowerCase() === (personName||'').toLowerCase())
-    .reduce((s,t) => s + t.amount, 0);
+  const lentTotal      = txns.filter(t => t.type === 'lent' && (t.lentTo||'').toLowerCase() === (personName||'').toLowerCase()).reduce((s,t) => s+t.amount, 0);
+  const recoveredTotal = txns.filter(t => t.type === 'income' && (t.lentTo||'').toLowerCase() === (personName||'').toLowerCase()).reduce((s,t) => s+t.amount, 0);
+  const pending        = Math.max(0, lentTotal - recoveredTotal);
 
   document.getElementById('modal-title').textContent = 'Settle — ' + personName;
   document.getElementById('modal-body').innerHTML =
@@ -1341,23 +1319,16 @@ function confirmSettleByPerson() {
   const date = document.getElementById('settle-person-date').value;
   if (!amt || amt <= 0) { showToast('Enter a valid amount', 'error'); return; }
 
-  let txns = DB.getTransactions();
-  let remaining = amt;
-  txns = txns.map(t => {
-    if (t.type === 'lent' && !t.lentSettled &&
-        (t.lentTo||'Unknown').toLowerCase() === personName.toLowerCase() && remaining > 0) {
-      remaining = Math.max(0, remaining - t.amount);
-      return { ...t, lentSettled: true };
-    }
-    return t;
-  });
+  // Record settlement as an income transaction tagged with lentTo.
+  // Pending = sum(lent) − sum(income tagged to person). No mutation of existing transactions.
   const cats = DB.getCategories();
+  let txns = DB.getTransactions();
   txns.unshift({
     id: DB.uuid(), type: 'income', amount: amt,
     categoryId: cats.find(c=>c.name==='Other Income')?.id || 'c14',
     description: 'Recovered from ' + personName,
     date, payment: 'cash', creditCardId: '', lentTo: personName,
-    transferTo: '', lentSettled: false, createdAt: new Date().toISOString(),
+    transferTo: '', createdAt: new Date().toISOString(),
   });
   DB.saveTransactions(txns);
   closeModal();

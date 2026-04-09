@@ -169,8 +169,8 @@ const DB = {
       });
       result.push({
         label: this.monthName(m),
-        income: filtered.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0),
-        expense: filtered.filter(t => t.type === 'expense' || t.type === 'lent' || t.type === 'transfer').reduce((s, t) => s + t.amount, 0),
+        income: filtered.filter(t => t.type === 'income' && !t.lentTo).reduce((s, t) => s + t.amount, 0),
+        expense: filtered.filter(t => t.type === 'expense' || t.type === 'transfer').reduce((s, t) => s + t.amount, 0) + Math.max(0, filtered.filter(t=>t.type==='lent').reduce((s,t)=>s+t.amount,0) - filtered.filter(t=>t.type==='income'&&t.lentTo).reduce((s,t)=>s+t.amount,0)),
       });
     }
     return result;
@@ -179,12 +179,21 @@ const DB = {
   catTotals(txns) {
     const cats = this.getCategories();
     const map = {};
-    txns.filter(t => t.type === 'expense').forEach(t => {
+    // Include expense, transfer, and lent (net of recoveries) in category breakdown
+    txns.filter(t => t.type === 'expense' || t.type === 'transfer').forEach(t => {
       map[t.categoryId] = (map[t.categoryId] || 0) + t.amount;
     });
+    // Lent: use net pending per lentTo person, bucketed under the Lent category
+    const lentCat = cats.find(c => c.type === 'lent');
+    if (lentCat) {
+      const lentGiven     = txns.filter(t => t.type === 'lent').reduce((s,t) => s+t.amount, 0);
+      const lentRecovered = txns.filter(t => t.type === 'income' && t.lentTo).reduce((s,t) => s+t.amount, 0);
+      const netLent = lentGiven - lentRecovered;
+      if (netLent > 0) map[lentCat.id] = (map[lentCat.id] || 0) + netLent;
+    }
     return Object.entries(map)
       .map(([id, total]) => ({ cat: cats.find(c => c.id === id), total }))
-      .filter(x => x.cat)
+      .filter(x => x.cat && x.total > 0)
       .sort((a, b) => b.total - a.total);
   },
 
@@ -310,11 +319,13 @@ const DB = {
     }
 
     const cats = this.getCategories();
-    const income  = txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
+    const income  = txns.filter(t=>t.type==='income'&&!t.lentTo).reduce((s,t)=>s+t.amount,0);
     const expenseOnly = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
     const transfer = txns.filter(t=>t.type==='transfer').reduce((s,t)=>s+t.amount,0);
     const expense = expenseOnly + transfer;
-    const lent    = txns.filter(t=>t.type==='lent'&&!t.lentSettled).reduce((s,t)=>s+t.amount,0);
+    const lentGivenEx     = txns.filter(t=>t.type==='lent').reduce((s,t)=>s+t.amount,0);
+    const lentRecoveredEx = txns.filter(t=>t.type==='income'&&t.lentTo).reduce((s,t)=>s+t.amount,0);
+    const lent = Math.max(0, lentGivenEx - lentRecoveredEx);
     const net = income - expense - lent;
     const catTotals = this.catTotals(txns).slice(0,10)
       .map(({cat,total}) => `<tr><td>${cat.icon} ${cat.name}</td><td style="font-weight:700;color:#F04438;text-align:right">${this.fmtFull(total)}</td></tr>`).join('');
