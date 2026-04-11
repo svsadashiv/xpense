@@ -236,7 +236,7 @@ function renderDashboard() {
     <div class="hero-amount">${DB.fmtFull(net)}</div>
     <div class="hero-row">
       <div class="hero-stat"><div class="hero-stat-label">↓ Income</div><div class="hero-stat-value">${DB.fmtINR(income)}</div></div>
-      <div class="hero-stat"><div class="hero-stat-label">↑ Outflow</div><div class="hero-stat-value">${DB.fmtINR(expenses + lentGiven)}</div></div>
+      <div class="hero-stat"><div class="hero-stat-label">↑ Outflow</div><div class="hero-stat-value">${DB.fmtINR(expenses + netLentPending)}</div></div>
       ${netLentPending > 0 ? `<div class="hero-stat"><div class="hero-stat-label">🤝 Lent</div><div class="hero-stat-value">${DB.fmtINR(netLentPending)}</div></div>` : ''}
     </div>
   </div>

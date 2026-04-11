@@ -300,77 +300,129 @@ const DB = {
 
   exportPDF(period) {
     const now = new Date();
-    let txns = this.getTransactions();
+    const allTxns = this.getTransactions();   // full history — for all-time pending
+    let txns = allTxns.slice();               // period-filtered copy
     if (period === 'month') {
       txns = txns.filter(t => {
         const d = new Date(t.date);
         return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
       });
     } else if (period === '3m') {
-      const since = new Date(now);
-      since.setMonth(since.getMonth() - 3);
+      const since = new Date(now); since.setMonth(since.getMonth() - 3);
       txns = txns.filter(t => new Date(t.date) >= since);
     } else if (period === '6m') {
-      const since = new Date(now);
-      since.setMonth(since.getMonth() - 6);
+      const since = new Date(now); since.setMonth(since.getMonth() - 6);
       txns = txns.filter(t => new Date(t.date) >= since);
     } else if (period === 'year') {
       txns = txns.filter(t => new Date(t.date).getFullYear() === now.getFullYear());
     }
 
     const cats = this.getCategories();
-    const income  = txns.filter(t=>t.type==='income'&&!t.lentTo).reduce((s,t)=>s+t.amount,0);
-    const expenseOnly = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
-    const transfer = txns.filter(t=>t.type==='transfer').reduce((s,t)=>s+t.amount,0);
-    const expense = expenseOnly + transfer;
-    const lentGivenEx     = txns.filter(t=>t.type==='lent').reduce((s,t)=>s+t.amount,0);
-    const lentRecoveredEx = txns.filter(t=>t.type==='income'&&t.lentTo).reduce((s,t)=>s+t.amount,0);
-    const lent = Math.max(0, lentGivenEx - lentRecoveredEx);
-    const net = income - expense - lent;
+
+    // ── Period metrics ────────────────────────────────────────────────
+    const income       = txns.filter(t=>t.type==='income'&&!t.lentTo).reduce((s,t)=>s+t.amount,0);
+    const expenseOnly  = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+    const transfer     = txns.filter(t=>t.type==='transfer').reduce((s,t)=>s+t.amount,0);
+    const expense      = expenseOnly + transfer;
+    const lentGiven    = txns.filter(t=>t.type==='lent').reduce((s,t)=>s+t.amount,0);
+    const lentRecovered= txns.filter(t=>t.type==='income'&&t.lentTo).reduce((s,t)=>s+t.amount,0);
+    const lentNet      = Math.max(0, lentGiven - lentRecovered); // period net lent
+    const net          = income - expense - lentNet;
+
+    // ── All-time pending — person-wise breakdown ──────────────────────
+    const personMap = {};
+    allTxns.forEach(t => {
+      const name = (t.lentTo || '').trim();
+      if (!name) return;
+      if (t.type === 'lent') {
+        personMap[name] = (personMap[name] || 0) + t.amount;
+      } else if (t.type === 'income' && t.lentTo) {
+        personMap[name] = (personMap[name] || 0) - t.amount;
+      }
+    });
+    const allTimePending = Math.max(0, Object.values(personMap).reduce((s,v)=>s+v,0));
+    const pendingPersonRows = Object.entries(personMap)
+      .filter(([,v]) => v > 0)
+      .sort((a,b) => b[1]-a[1])
+      .map(([name,amt]) =>
+        `<tr><td>👤 ${name}</td><td style="font-weight:700;color:#F79009;text-align:right">${this.fmtFull(amt)}</td></tr>`
+      ).join('');
+
     const catTotals = this.catTotals(txns).slice(0,10)
       .map(({cat,total}) => `<tr><td>${cat.icon} ${cat.name}</td><td style="font-weight:700;color:#F04438;text-align:right">${this.fmtFull(total)}</td></tr>`).join('');
+
     const rows = [...txns].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,200).map(t => {
       const cat = cats.find(c=>c.id===t.categoryId);
       const color = t.type==='income'?'#12B76A':t.type==='lent'?'#F79009':'#F04438';
+      const isSettlement = t.type==='income' && t.lentTo;
+      const typeLabel = isSettlement ? 'settle' : t.type;
+      const amtColor  = isSettlement ? '#12B76A' : color;
       return `<tr>
         <td>${this.fmtDate(t.date)}</td>
-        <td><span style="background:${color}22;color:${color};padding:2px 7px;border-radius:8px;font-size:11px;font-weight:600">${t.type}</span></td>
+        <td><span style="background:${color}22;color:${color};padding:2px 7px;border-radius:8px;font-size:11px;font-weight:600">${typeLabel}</span></td>
         <td>${cat?.icon||''} ${cat?.name||''}</td>
-        <td style="font-weight:700;color:${color};text-align:right">${t.type==='income'?'+':'−'}${this.fmtFull(t.amount)}</td>
+        <td style="font-weight:700;color:${amtColor};text-align:right">${t.type==='income'?'+':'−'}${this.fmtFull(t.amount)}</td>
         <td>${(t.payment||'').replace(/-/g,' ')}</td>
         <td>${t.description||''}</td>
         <td>${t.lentTo||t.transferTo||''}</td>
       </tr>`;
     }).join('');
+
+    const periodLabel = {month:'This Month','3m':'Last 3 Months','6m':'Last 6 Months',year:'This Year',all:'All Time'}[period] || period || 'All Time';
+
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/>
     <title>Xpense Report</title>
     <style>
       *{box-sizing:border-box}body{font-family:'Segoe UI',sans-serif;margin:0;padding:32px;color:#0F1629}
       h1{font-size:28px;font-weight:800;color:#0D75F8;margin-bottom:4px}
       .sub{color:#5A6278;font-size:13px;margin-bottom:28px}
-      .kpis{display:flex;gap:14px;margin-bottom:28px;flex-wrap:wrap}
+      .section-label{font-size:11px;font-weight:700;color:#5A6278;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+      .kpis{display:flex;gap:14px;margin-bottom:8px;flex-wrap:wrap}
       .kpi{background:#F7F8FC;border-radius:12px;padding:16px 20px;min-width:140px}
       .kpi-l{font-size:11px;color:#5A6278;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
       .kpi-v{font-size:22px;font-weight:800}
-      h2{font-size:16px;font-weight:700;margin:20px 0 10px;color:#0F1629;border-bottom:2px solid #E4E7EF;padding-bottom:6px}
+      .kpi-note{font-size:10px;color:#9AA3B8;margin-top:3px}
+      h2{font-size:16px;font-weight:700;margin:24px 0 10px;color:#0F1629;border-bottom:2px solid #E4E7EF;padding-bottom:6px}
       table{width:100%;border-collapse:collapse;font-size:12px}
       th{background:#0D75F8;color:white;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
       td{padding:7px 10px;border-bottom:1px solid #E4E7EF;vertical-align:middle}
       tr:nth-child(even) td{background:#F7F8FC}
+      .lent-table th{background:#F79009}
       @media print{body{padding:16px}h2{page-break-before:auto}}
     </style></head><body>
     <h1>₹ Xpense Report</h1>
-    <div class="sub">Generated ${new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})}${period?' · '+period:''}</div>
+    <div class="sub">Generated ${new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})} · Period: ${periodLabel}</div>
+
+    <div class="section-label">Period Summary — ${periodLabel}</div>
     <div class="kpis">
-      <div class="kpi"><div class="kpi-l">Total Income</div><div class="kpi-v" style="color:#12B76A">${this.fmtFull(income)}</div></div>
-      <div class="kpi"><div class="kpi-l">Total Expenses</div><div class="kpi-v" style="color:#F04438">${this.fmtFull(expense)}</div></div>
+      <div class="kpi"><div class="kpi-l">Income</div><div class="kpi-v" style="color:#12B76A">${this.fmtFull(income)}</div></div>
+      <div class="kpi"><div class="kpi-l">Expenses</div><div class="kpi-v" style="color:#F04438">${this.fmtFull(expense)}</div><div class="kpi-note">incl. transfers</div></div>
       <div class="kpi"><div class="kpi-l">Net Savings</div><div class="kpi-v" style="color:${net>=0?'#12B76A':'#F04438'}">${this.fmtFull(net)}</div></div>
-      ${lent>0?`<div class="kpi"><div class="kpi-l">Pending Lent</div><div class="kpi-v" style="color:#F79009">${this.fmtFull(lent)}</div></div>`:''}
+      ${lentGiven>0?`<div class="kpi"><div class="kpi-l">Lent (period)</div><div class="kpi-v" style="color:#F79009">${this.fmtFull(lentGiven)}</div><div class="kpi-note">given in period</div></div>`:''}
+      ${lentRecovered>0?`<div class="kpi"><div class="kpi-l">Recovered (period)</div><div class="kpi-v" style="color:#12B76A">${this.fmtFull(lentRecovered)}</div><div class="kpi-note">settled in period</div></div>`:''}
+      ${lentNet>0?`<div class="kpi"><div class="kpi-l">Net Lent (period)</div><div class="kpi-v" style="color:#F79009">${this.fmtFull(lentNet)}</div><div class="kpi-note">given minus settled</div></div>`:''}
     </div>
-    <div style="margin:-12px 0 18px;color:#5A6278;font-size:12px">Expenses include transfers.</div>
-    <h2>Top Categories</h2>
+
+    ${allTimePending > 0 ? `
+    <div style="margin-top:20px">
+      <div class="section-label">All-Time Pending Lent — Total Outstanding</div>
+      <div class="kpis">
+        <div class="kpi" style="background:#FEF3C7;border:1.5px solid #F79009">
+          <div class="kpi-l" style="color:#B45309">Total Pending (all time)</div>
+          <div class="kpi-v" style="color:#D97706">${this.fmtFull(allTimePending)}</div>
+          <div class="kpi-note" style="color:#B45309">across all persons, since inception</div>
+        </div>
+      </div>
+      ${pendingPersonRows ? `
+      <h2 style="color:#B45309;border-bottom-color:#F79009">Pending by Person (All Time)</h2>
+      <table class="lent-table"><thead><tr><th>Person</th><th style="text-align:right">Pending Amount</th></tr></thead>
+      <tbody>${pendingPersonRows}</tbody></table>` : ''}
+    </div>` : ''}
+
+    <h2>Top Spending Categories</h2>
     <table><thead><tr><th>Category</th><th style="text-align:right">Amount</th></tr></thead><tbody>${catTotals}</tbody></table>
-    <h2>Transactions (${txns.length})</h2>
+
+    <h2>Transactions — ${periodLabel} (${txns.length})</h2>
     <table><thead><tr><th>Date</th><th>Type</th><th>Category</th><th style="text-align:right">Amount</th><th>Payment</th><th>Description</th><th>Person</th></tr></thead><tbody>${rows}</tbody></table>
     </body></html>`;
     const w = window.open('','_blank');
