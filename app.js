@@ -339,7 +339,7 @@ function renderTransactions() {
     '<button class="btn btn-primary" onclick="openAddTransaction()">+ Add</button></div>' +
 
     '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">' +
-      '<input class="search-input" placeholder="Search…" value="'+txnSearch+'" oninput="txnSearch=this.value;renderTab(\'transactions\')" />' +
+      '<input class="search-input" id="txn-search-input" placeholder="Search…" value="'+txnSearch+'" />' +
       '<select class="form-select" style="width:auto" onchange="txnYear=this.value?+this.value:null;txnMonth=null;renderTab(\'transactions\')">' +
         '<option value="">All Years</option>'+yearOpts+'</select>' +
       '<select class="form-select" style="width:auto" onchange="txnMonth=this.value?+this.value:null;renderTab(\'transactions\')">' +
@@ -359,7 +359,7 @@ function renderTransactions() {
       pendingBadge +
     '</div>' +
 
-    txnRows;
+    '<div id="txn-rows-container">' + txnRows + '</div>';
 }
 
 
@@ -394,7 +394,37 @@ function txnRowHTML(t, cats, showActions = false) {
   </div>`;
 }
 
-function afterTransactions() {}
+function afterTransactions() {
+  const searchInput = document.getElementById('txn-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', function() {
+      txnSearch = this.value;
+      // Re-render only the transaction rows, not the whole tab (preserves focus)
+      const cats = DB.getCategories();
+      let txns = DB.getTransactions();
+      if (txnFilter !== 'all') txns = txns.filter(t => t.type === txnFilter);
+      if (txnSearch) {
+        const s = txnSearch.toLowerCase();
+        txns = txns.filter(t => (t.description||'').toLowerCase().includes(s) || (t.lentTo||'').toLowerCase().includes(s) || (t.transferTo||'').toLowerCase().includes(s));
+      }
+      if (txnYear)    txns = txns.filter(t => new Date(t.date).getFullYear() === txnYear);
+      if (txnMonth)   txns = txns.filter(t => new Date(t.date).getMonth() + 1 === txnMonth);
+      if (txnPayment) txns = txns.filter(t => t.payment === txnPayment);
+      txns.sort((a,b) => b.date.localeCompare(a.date));
+      const groups = {};
+      txns.forEach(t => (groups[t.date] = groups[t.date] || []).push(t));
+      const sortedDates = Object.keys(groups).sort((a,b) => b.localeCompare(a));
+      const rowsHTML = sortedDates.length === 0
+        ? '<div class="empty-state"><div class="empty-icon">🔍</div><p>No transactions found</p></div>'
+        : sortedDates.map(date =>
+            '<div class="section-date">'+formatDateHeader(date)+'</div>' +
+            '<div class="txn-list">'+groups[date].map(t => txnRowHTML(t, cats, true)).join('')+'</div>'
+          ).join('');
+      const rowsContainer = document.getElementById('txn-rows-container');
+      if (rowsContainer) rowsContainer.innerHTML = rowsHTML;
+    });
+  }
+}
 
 function formatDateHeader(iso) {
   const d = new Date(iso + 'T12:00:00');
@@ -410,7 +440,12 @@ function renderLoans() {
   const loans = DB.getLoans();
   const txns = DB.getTransactions();
   const totalPrincipal = loans.reduce((s,l)=>s+l.principal,0);
-  const totalEMI = loans.reduce((s,l)=>s+DB.calcEMI(l.principal,l.rate,l.months),0);
+  // Only sum EMI for loans that are not fully repaid
+  const totalEMI = loans.reduce((s,l)=>{
+    const paid = getLoanPaidEmiNumbers(l, txns);
+    const isFullyRepaid = paid.length >= l.months;
+    return isFullyRepaid ? s : s + DB.calcEMI(l.principal, l.rate, l.months);
+  }, 0);
 
   return `
   <div class="page-header">
@@ -495,11 +530,23 @@ function afterLoans() {}
 function renderCards() {
   const cats = DB.getCategories();
   const cards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
+  const totalDue = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
+  const totalLimit = cards.reduce((s,c) => s + (c.limit||0), 0);
+  const overdueCards = cards.filter(c => new Date(c.dueDate) < new Date() && (c.dueBalance||0) > 0);
+  const totalUtil = totalLimit > 0 ? Math.min((totalDue / totalLimit) * 100, 100) : 0;
   return `
   <div class="page-header">
     <div><div class="page-title">Credit Cards</div></div>
     <button class="btn btn-primary" onclick="openAddCard()">+ Add Card</button>
   </div>
+  ${cards.length ? `
+  <div class="kpi-grid" style="margin-bottom:24px">
+    <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">💳</div><div class="kpi-label">Total Cards</div><div class="kpi-value">${cards.length}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">💸</div><div class="kpi-label">Total Due</div><div class="kpi-value text-red">${DB.fmtINR(totalDue)}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">📊</div><div class="kpi-label">Avg Utilization</div><div class="kpi-value text-orange">${totalUtil.toFixed(1)}%</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#E8F5E9">🏦</div><div class="kpi-label">Total Limit</div><div class="kpi-value text-green">${DB.fmtINR(totalLimit)}</div></div>
+    ${overdueCards.length ? `<div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">⚠️</div><div class="kpi-label">Overdue Cards</div><div class="kpi-value text-orange">${overdueCards.length}</div></div>` : ''}
+  </div>` : ''}
   ${cards.length === 0 ? `<div class="empty-state"><div class="empty-icon">💳</div><p>No credit cards added yet.</p></div>` :
     cards.map(c => creditCardHTML(c)).join('')}`;
 }
@@ -559,7 +606,10 @@ function creditCardHTML(c) {
         <div style="height:4px;background:rgba(255,255,255,.25);border-radius:2px;overflow:hidden">
           <div style="height:100%;background:white;width:${util.toFixed(1)}%;border-radius:2px;opacity:.85"></div>
         </div>
-        <div style="text-align:right;font-size:11px;opacity:.6;margin-top:4px">${isOpen ? '▲ Less' : '▼ Details'}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <div style="font-size:11px;opacity:.6">${isOpen ? '▲ Less' : '▼ Details'}</div>
+          ${due > 0 ? `<button onclick="event.stopPropagation();openSettleCard('${c.id}')" style="background:rgba(255,255,255,0.25);border:1px solid rgba(255,255,255,0.5);color:white;padding:5px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">💳 Pay Now</button>` : ''}
+        </div>
       </div>
     </div>
     ${detail}
