@@ -288,7 +288,7 @@ function renderTransactions() {
   if (txnFilter !== 'all') txns = txns.filter(t => t.type === txnFilter);
   if (txnSearch) {
     const s = txnSearch.toLowerCase();
-    txns = txns.filter(t => (t.description||'').toLowerCase().includes(s) || (t.lentTo||'').toLowerCase().includes(s) || (t.transferTo||'').toLowerCase().includes(s));
+    txns = txns.filter(t => (t.description||'').toLowerCase().includes(s) || (t.lentTo||'').toLowerCase().includes(s) || (t.transferTo||'').toLowerCase().includes(s) || (cats.find(c => c.id === t.categoryId)?.name||'').toLowerCase().includes(s));
   }
   if (txnYear)    txns = txns.filter(t => new Date(t.date).getFullYear() === txnYear);
   if (txnMonth)   txns = txns.filter(t => new Date(t.date).getMonth() + 1 === txnMonth);
@@ -405,7 +405,7 @@ function afterTransactions() {
       if (txnFilter !== 'all') txns = txns.filter(t => t.type === txnFilter);
       if (txnSearch) {
         const s = txnSearch.toLowerCase();
-        txns = txns.filter(t => (t.description||'').toLowerCase().includes(s) || (t.lentTo||'').toLowerCase().includes(s) || (t.transferTo||'').toLowerCase().includes(s));
+        txns = txns.filter(t => (t.description||'').toLowerCase().includes(s) || (t.lentTo||'').toLowerCase().includes(s) || (t.transferTo||'').toLowerCase().includes(s) || (cats.find(c => c.id === t.categoryId)?.name||'').toLowerCase().includes(s));
       }
       if (txnYear)    txns = txns.filter(t => new Date(t.date).getFullYear() === txnYear);
       if (txnMonth)   txns = txns.filter(t => new Date(t.date).getMonth() + 1 === txnMonth);
