@@ -1496,15 +1496,36 @@ function openSettleCard(id) {
   const card = cardsWithDue(DB.getCards(), txns, cats).find(c => c.id === id);
   if (!card) return;
   const due = card.dueBalance || 0;
+  // Build a meaningful default description so it's clear which card was paid
+  const cardLabel = card.bank + ' ···· ' + card.last4 + ' (' + card.name + ')';
   const body = `
-  <div style="text-align:center;margin-bottom:16px">
-    <div style="font-size:13px;color:var(--text3)">Outstanding Balance</div>
-    <div style="font-size:32px;font-weight:700;color:var(--red)">${DB.fmtFull(due)}</div>
+  <div style="background:linear-gradient(135deg,${card.color},${card.color}bb);border-radius:12px;padding:14px 18px;color:white;margin-bottom:16px">
+    <div style="font-size:13px;opacity:.8">${card.bank} ···· ${card.last4}</div>
+    <div style="font-size:16px;font-weight:700;margin-top:2px">${card.name}</div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:10px">
+      <div><div style="font-size:11px;opacity:.7">Outstanding Due</div><div style="font-size:26px;font-weight:800">${DB.fmtFull(due)}</div></div>
+      <div style="text-align:right"><div style="font-size:11px;opacity:.7">Min Payment</div><div style="font-size:15px;font-weight:600">${DB.fmtFull(card.minPayment||0)}</div></div>
+    </div>
   </div>
-  <div class="form-group"><label class="form-label">Payment Amount (₹)</label><input class="form-input" id="settle-amt" type="number" placeholder="${due}" value="${due}" /></div>
-  <div style="display:flex;gap:8px;margin-bottom:16px">
+  <div class="form-group"><label class="form-label">Payment Amount (₹)</label>
+    <input class="form-input" id="settle-amt" type="number" placeholder="${due}" value="${due}" step="0.01" />
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:12px">
     <button class="btn btn-secondary btn-sm" onclick="document.getElementById('settle-amt').value='${due}'">Full Balance</button>
-    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('settle-amt').value='${card.minPayment}'">Minimum</button>
+    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('settle-amt').value='${card.minPayment||0}'">Minimum</button>
+  </div>
+  <div class="form-row">
+    <div class="form-group"><label class="form-label">Payment Date</label>
+      <input class="form-input" id="settle-date" type="date" value="${DB.today()}" />
+    </div>
+    <div class="form-group"><label class="form-label">Payment Method</label>
+      <select class="form-select" id="settle-method">
+        ${['net-banking','upi','neft','imps','cheque','cash'].map(p=>'<option value="'+p+'">'+p.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase())+'</option>').join('')}
+      </select>
+    </div>
+  </div>
+  <div class="form-group"><label class="form-label">Description</label>
+    <input class="form-input" id="settle-desc" type="text" value="CC Payment — ${cardLabel}" />
   </div>
   <div class="modal-footer">
     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -1514,15 +1535,32 @@ function openSettleCard(id) {
 }
 
 function settleCard(id) {
-  const amt = parseFloat(document.getElementById('settle-amt').value);
+  const amt  = parseFloat(document.getElementById('settle-amt').value);
   if (!amt || amt <= 0) { showToast('Enter valid amount', 'error'); return; }
-  // Add transaction
+  const date   = document.getElementById('settle-date')?.value   || DB.today();
+  const method = document.getElementById('settle-method')?.value || 'net-banking';
+  const desc   = document.getElementById('settle-desc')?.value?.trim();
+
+  // Find card to build fallback description
+  const card = DB.getCards().find(c => c.id === id);
+  const cardLabel = card ? card.bank + ' ···· ' + card.last4 + ' (' + card.name + ')' : id;
+  const finalDesc = desc || ('CC Payment — ' + cardLabel);
+
   const txns = DB.getTransactions();
-  txns.unshift({ id:DB.uuid(), type:'expense', amount:roundMoney(amt), categoryId:DB.getCategories().find(c=>c.id==='c18'||c.name==='Credit Card')?.id||'c18', description:'Credit Card Payment', date:DB.today(), payment:'net-banking', creditCardId:id, lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
+  txns.unshift({
+    id: DB.uuid(), type: 'expense',
+    amount: roundMoney(amt),
+    categoryId: DB.getCategories().find(c=>c.id==='c18'||c.name==='Credit Card')?.id || 'c18',
+    description: finalDesc,
+    date, payment: method,
+    creditCardId: id,        // links to the exact card — used by cardDueFromTransactions
+    lentTo: '', transferTo: '', lentSettled: false, isSystem: true,
+    createdAt: new Date().toISOString(),
+  });
   DB.saveTransactions(txns);
   closeModal();
   renderTab('cards');
-  showToast('Payment recorded ✓', 'success');
+  showToast('Payment recorded for ' + cardLabel + ' ✓', 'success');
 }
 
 function deleteCard(id) {
