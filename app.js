@@ -26,10 +26,17 @@ let pinSetup  = false;
 let pinConfirm = '';
 
 function initAuth() {
+  // Replace each button with a fresh clone to remove any existing listeners,
+  // then attach new ones. This is safe to call multiple times (e.g. on each lock).
   document.querySelectorAll('.num-btn[data-num]').forEach(btn => {
-    btn.addEventListener('click', () => appendPin(btn.dataset.num));
+    const fresh = btn.cloneNode(true);
+    btn.parentNode.replaceChild(fresh, btn);
+    fresh.addEventListener('click', () => appendPin(fresh.dataset.num));
   });
-  document.getElementById('del-btn').addEventListener('click', deletePin);
+  const delBtn = document.getElementById('del-btn');
+  const freshDel = delBtn.cloneNode(true);
+  delBtn.parentNode.replaceChild(freshDel, delBtn);
+  freshDel.addEventListener('click', deletePin);
 }
 
 function appendPin(d) {
@@ -136,6 +143,9 @@ function lockApp() {
   updatePinDots();
   document.getElementById('main-app').style.display = 'none';
   document.getElementById('auth-screen').style.display = 'flex';
+  // Re-attach numpad listeners every time we show the lock screen
+  // (initAuth only ran at startup; buttons need listeners wired again)
+  initAuth();
 }
 
 // ── Tab Renderer ───────────────────────────────────────────────────────
