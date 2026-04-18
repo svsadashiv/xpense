@@ -477,22 +477,34 @@ function loanCardHTML(l, txns) {
   const emi = DB.calcEMI(l.principal, l.rate, l.months);
   const totalPayable = emi * l.months;
   const totalInterest = totalPayable - l.principal;
+  const gstRate = l.gst || 0;
   const paid = getLoanPaidEmiNumbers(l, txns);
   const pct  = Math.min((paid.length / l.months) * 100, 100);
   const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
   const nextEMI  = schedule.find(s => !paid.includes(s.n));
   const paidInterest = paid.reduce((s, n) => { const e = schedule.find(x=>x.n===n); return s + (e?.interest||0); }, 0);
+  const paidGST = paid.reduce((s, n) => { const e = schedule.find(x=>x.n===n); return s + ((e?.interest||0) * gstRate / 100); }, 0);
+  const totalGST = schedule.reduce((s, e) => s + (e.interest * gstRate / 100), 0);
   const remaining = nextEMI ? schedule.find(s=>s.n===paid.length)?.balance || l.principal : 0;
+
+  // Next EMI GST
+  const nextEMIGST = nextEMI ? (nextEMI.interest * gstRate / 100) : 0;
+  const nextEMITotal = nextEMI ? (emi + nextEMIGST) : 0;
+
+  const gstBadge = gstRate > 0
+    ? `<span style="font-size:11px;background:#FEF3C7;color:#92400E;padding:2px 8px;border-radius:6px;font-weight:600">GST ${gstRate}%</span>`
+    : '';
 
   return `
   <div class="card loan-card" id="loan-${l.id}">
     <div class="loan-header">
       <div>
         <div class="loan-title">${l.name}</div>
-        <div style="font-size:13px;color:var(--text3);margin-top:3px">🏦 ${l.lender} · ${l.rate}% p.a.</div>
+        <div style="font-size:13px;color:var(--text3);margin-top:3px">🏦 ${l.lender} · ${l.rate}% p.a. ${gstBadge}</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <span class="loan-type-badge">${l.type}</span>
+        <button class="icon-btn icon-btn-edit" onclick="openEditLoan('${l.id}')" title="Edit Loan">✏️</button>
         <button class="icon-btn icon-btn-del" onclick="deleteLoan('${l.id}')">🗑️</button>
       </div>
     </div>
@@ -506,12 +518,16 @@ function loanCardHTML(l, txns) {
       <div class="loan-stat"><div class="loan-stat-label">Remaining</div><div class="loan-stat-value text-red">${DB.fmtINR(remaining)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Interest Paid</div><div class="loan-stat-value">${DB.fmtINR(paidInterest)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Total Interest</div><div class="loan-stat-value text-orange">${DB.fmtINR(totalInterest)}</div></div>
+      ${gstRate > 0 ? `
+      <div class="loan-stat"><div class="loan-stat-label">GST Paid</div><div class="loan-stat-value text-orange">${DB.fmtINR(paidGST)}</div></div>
+      <div class="loan-stat"><div class="loan-stat-label">Total GST</div><div class="loan-stat-value text-orange">${DB.fmtINR(totalGST)}</div></div>
+      ` : ''}
     </div>
     ${nextEMI ? `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:10px 14px;background:var(--blue-light);border-radius:8px">
       <div>
         <div style="font-size:12px;color:var(--blue);font-weight:600">Next EMI #${nextEMI.n}</div>
-        <div style="font-size:13px;color:var(--text2)">${DB.fmtDate(nextEMI.date)} · ${DB.fmtINR(emi)}</div>
+        <div style="font-size:13px;color:var(--text2)">${DB.fmtDate(nextEMI.date)} · EMI ${DB.fmtINR(emi)}${gstRate > 0 ? ` + GST ${DB.fmtINR(nextEMIGST)} = <strong>${DB.fmtINR(nextEMITotal)}</strong>` : ''}</div>
       </div>
       <button class="btn btn-primary btn-sm" onclick="markEMIPaid('${l.id}',${nextEMI.n})">Mark Paid ✓</button>
     </div>` : '<div style="margin-top:12px;padding:10px;background:var(--green-light);border-radius:8px;text-align:center;color:var(--green);font-weight:600">✓ Loan Fully Repaid!</div>'}
@@ -519,14 +535,18 @@ function loanCardHTML(l, txns) {
     <div id="amort-${l.id}" style="display:none;margin-top:12px">
       <div class="amort-scroll">
         <table class="amort-table">
-          <thead><tr><th>#</th><th>Date</th><th>EMI</th><th>Principal</th><th>Interest</th><th>Balance</th></tr></thead>
+          <thead><tr><th>#</th><th>Date</th><th>EMI</th><th>Principal</th><th>Interest</th>${gstRate > 0 ? '<th>GST</th><th>Total</th>' : ''}<th>Balance</th></tr></thead>
           <tbody>
-            ${schedule.map(s => `
+            ${schedule.map(s => {
+              const rowGST = s.interest * gstRate / 100;
+              const rowTotal = s.emi + rowGST;
+              return `
             <tr class="${paid.includes(s.n)?'paid':''}">
               <td>${s.n}</td><td>${DB.fmtDate(s.date)}</td>
               <td>${DB.fmtINR(s.emi)}</td><td>${DB.fmtINR(s.principal)}</td>
-              <td>${DB.fmtINR(s.interest)}</td><td>${DB.fmtINR(s.balance)}</td>
-            </tr>`).join('')}
+              <td>${DB.fmtINR(s.interest)}</td>${gstRate > 0 ? `<td style="color:var(--orange)">${DB.fmtINR(rowGST)}</td><td style="font-weight:600">${DB.fmtINR(rowTotal)}</td>` : ''}<td>${DB.fmtINR(s.balance)}</td>
+            </tr>`;
+            }).join('')}
           </tbody>
         </table>
       </div>
@@ -1397,45 +1417,70 @@ function confirmSettleByPerson() {
 }
 
 // ── Add Loan ───────────────────────────────────────────────────────────
-function openAddLoan() {
+function openAddLoan(editId = null) {
+  const edit = editId ? DB.getLoans().find(l => l.id === editId) : null;
+  const loanTypes = ['Home Loan','Car Loan','Personal Loan','Education Loan','Business Loan','Other'];
   const body = `
   <div class="form-row">
-    <div class="form-group"><label class="form-label">Loan Name</label><input class="form-input" id="l-name" placeholder="e.g. Home Loan - SBI" /></div>
-    <div class="form-group"><label class="form-label">Lender</label><input class="form-input" id="l-lender" placeholder="Bank name" /></div>
+    <div class="form-group"><label class="form-label">Loan Name</label><input class="form-input" id="l-name" placeholder="e.g. Home Loan - SBI" value="${edit?.name||''}" /></div>
+    <div class="form-group"><label class="form-label">Lender</label><input class="form-input" id="l-lender" placeholder="Bank name" value="${edit?.lender||''}" /></div>
   </div>
   <div class="form-group"><label class="form-label">Loan Type</label>
     <select class="form-select" id="l-type">
-      ${['Home Loan','Car Loan','Personal Loan','Education Loan','Business Loan','Other'].map(t=>`<option>${t}</option>`).join('')}
+      ${loanTypes.map(t=>`<option${edit?.type===t?' selected':''}>${t}</option>`).join('')}
     </select>
   </div>
   <div class="form-row">
-    <div class="form-group"><label class="form-label">Principal (₹)</label><input class="form-input" id="l-principal" type="number" placeholder="500000" /></div>
-    <div class="form-group"><label class="form-label">Annual Rate (%)</label><input class="form-input" id="l-rate" type="number" step="0.01" placeholder="8.5" /></div>
+    <div class="form-group"><label class="form-label">Principal (₹)</label><input class="form-input" id="l-principal" type="number" placeholder="500000" value="${edit?.principal||''}" /></div>
+    <div class="form-group"><label class="form-label">Annual Rate (%)</label><input class="form-input" id="l-rate" type="number" step="0.01" placeholder="8.5" value="${edit?.rate||''}" /></div>
   </div>
   <div class="form-row">
-    <div class="form-group"><label class="form-label">Tenure (months)</label><input class="form-input" id="l-months" type="number" placeholder="120" /></div>
-    <div class="form-group"><label class="form-label">Start Date</label><input class="form-input" id="l-start" type="date" value="${DB.today()}" /></div>
+    <div class="form-group"><label class="form-label">Tenure (months)</label><input class="form-input" id="l-months" type="number" placeholder="120" value="${edit?.months||''}" /></div>
+    <div class="form-group"><label class="form-label">Start Date</label><input class="form-input" id="l-start" type="date" value="${edit?.startDate||DB.today()}" /></div>
+  </div>
+  <div class="form-group">
+    <label class="form-label">GST on Interest (%)</label>
+    <input class="form-input" id="l-gst" type="number" step="0.01" min="0" max="100" placeholder="18 (GST applied on monthly interest)" value="${edit?.gst??''}" />
+    <div style="margin-top:5px;font-size:12px;color:var(--text3)">GST is charged on the interest component of each EMI (e.g. 18% for most loan services)</div>
   </div>
   <div id="emi-preview" style="background:var(--blue-light);border-radius:8px;padding:12px;margin-top:4px;display:none">
     <div style="font-size:13px;color:var(--blue)">Calculated EMI: <strong id="emi-val"></strong></div>
+    <div style="font-size:12px;color:var(--text2);margin-top:4px" id="gst-preview-line"></div>
   </div>
+  <input type="hidden" id="l-id" value="${edit?.id||''}" />
   <div class="modal-footer">
     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="saveLoan()">Add Loan</button>
+    <button class="btn btn-primary" onclick="saveLoan()">${edit ? 'Update Loan' : 'Add Loan'}</button>
   </div>`;
-  openModal('Add Loan', body);
-  ['l-principal','l-rate','l-months'].forEach(id => {
+  openModal(edit ? 'Edit Loan' : 'Add Loan', body);
+  ['l-principal','l-rate','l-months','l-gst'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', previewEMI);
   });
 }
+
+function openEditLoan(id) { openAddLoan(id); }
 
 function previewEMI() {
   const p = parseFloat(document.getElementById('l-principal').value);
   const r = parseFloat(document.getElementById('l-rate').value);
   const m = parseInt(document.getElementById('l-months').value);
+  const gst = parseFloat(document.getElementById('l-gst')?.value) || 0;
   if (p && r && m) {
     const emi = DB.calcEMI(p, r, m);
     document.getElementById('emi-val').textContent = DB.fmtFull(emi) + '/month';
+    const gstLine = document.getElementById('gst-preview-line');
+    if (gstLine) {
+      if (gst > 0) {
+        // Rough avg monthly interest for preview: total interest / months
+        const totalInterest = (emi * m) - p;
+        const avgMonthlyInterest = totalInterest / m;
+        const avgMonthlyGST = avgMonthlyInterest * (gst / 100);
+        gstLine.textContent = `Avg. GST on interest: ${DB.fmtFull(avgMonthlyGST)}/month (${gst}% of interest component)`;
+        gstLine.style.display = '';
+      } else {
+        gstLine.style.display = 'none';
+      }
+    }
     document.getElementById('emi-preview').style.display = 'block';
   }
 }
@@ -1446,12 +1491,23 @@ function saveLoan() {
   const rate = parseFloat(document.getElementById('l-rate').value);
   const months = parseInt(document.getElementById('l-months').value);
   if (!name || !principal || !rate || !months) { showToast('Fill all required fields', 'error'); return; }
-  const loans = DB.getLoans();
-  loans.push({ id:DB.uuid(), name, lender:document.getElementById('l-lender').value, type:document.getElementById('l-type').value, principal, rate, months, startDate:document.getElementById('l-start').value, paidEMIs:[] });
+  const gst = parseFloat(document.getElementById('l-gst').value) || 0;
+  const id = document.getElementById('l-id').value;
+  const loanData = { id: id||DB.uuid(), name, lender: document.getElementById('l-lender').value, type: document.getElementById('l-type').value, principal, rate, months, gst, startDate: document.getElementById('l-start').value, paidEMIs: [] };
+  let loans = DB.getLoans();
+  if (id) {
+    // Preserve paidEMIs when editing
+    const existing = loans.find(l => l.id === id);
+    loanData.paidEMIs = existing?.paidEMIs || [];
+    loans = loans.map(l => l.id === id ? loanData : l);
+    showToast('Loan updated ✓', 'success');
+  } else {
+    loans.push(loanData);
+    showToast('Loan added ✓', 'success');
+  }
   DB.saveLoans(loans);
   closeModal();
   renderTab('loans');
-  showToast('Loan added ✓', 'success');
 }
 
 function markEMIPaid(loanId, n) {
