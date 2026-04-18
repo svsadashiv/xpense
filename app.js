@@ -1089,6 +1089,10 @@ function backfillTransactionLinks() {
   const ctx = { goals: DB.getGoals(), loans: DB.getLoans(), cards: DB.getCards(), cats: DB.getCategories(), txns };
   let changed = false;
   const next = txns.map(t => {
+    // Never re-process a transaction that already has txnKind set — it is fully linked.
+    // Re-running autoLinkTransaction on already-tagged EMI transactions re-assigns
+    // sequential emiNo values on each page refresh, causing incorrect paid-EMI counts.
+    if (t.txnKind) return t;
     const linked = autoLinkTransaction(t, ctx);
     if (JSON.stringify(linked) !== JSON.stringify(t)) changed = true;
     return linked;
@@ -1096,13 +1100,12 @@ function backfillTransactionLinks() {
   if (changed) DB.saveTransactions(next);
 }
 function getLoanPaidEmiNumbers(loan, txns) {
+  // Single source of truth: only transactions tagged txnKind='loan-emi' with a valid emiNo.
+  // All legacy paidEMIs[] and untagged transactions are migrated at startup by migrateLoanEMIs().
   const linked = txns
     .filter(t => t.txnKind === 'loan-emi' && t.loanId === loan.id && Number.isFinite(+t.emiNo))
     .map(t => +t.emiNo);
-  if (linked.length) return [...new Set(linked)].sort((a,b)=>a-b);
-  if ((loan.paidEMIs || []).length) return [...new Set(loan.paidEMIs)].sort((a,b)=>a-b);
-  const legacyCount = txns.filter(t => t.type === 'expense' && (t.description || '') === ('EMI - ' + loan.name)).length;
-  return Array.from({ length: legacyCount }, (_, i) => i + 1);
+  return [...new Set(linked)].sort((a, b) => a - b);
 }
 function getGoalCurrentFromTransactions(goal, txns) {
   const base = +(goal.baseCurrent ?? goal.current ?? 0);
@@ -1906,6 +1909,10 @@ function handleImportJSON(input) {
   reader.onload = e => {
     try {
       DB.importJSON(e.target.result);
+      // Run migration + backfill on the freshly imported data so that
+      // loan paid-EMI counts are correct immediately, without needing a refresh.
+      migrateLoanEMIs();
+      backfillTransactionLinks();
       renderTab(currentTab);
       showToast('Backup restored ✓','success');
     } catch(err) {
@@ -1972,8 +1979,89 @@ function showToast(msg, type = '') {
   setTimeout(() => t.classList.remove('show'), 2800);
 }
 
+// ── Loan EMI Migration ─────────────────────────────────────────────────
+// One-time migration: converts legacy paidEMIs[] arrays and untagged EMI
+// expense transactions into the canonical txnKind='loan-emi' format.
+// Safe to run on every startup — it is idempotent and only writes if needed.
+function migrateLoanEMIs() {
+  const loans = DB.getLoans();
+  if (!loans.length) return;
+
+  let txns = DB.getTransactions();
+  let txnsChanged = false;
+  let loansChanged = false;
+
+  loans.forEach(loan => {
+    // ── Step 1: tag untagged legacy EMI expense transactions ─────────────
+    // These are plain expense rows written before the txnKind system existed.
+    // They match description "EMI - <Loan Name>" but have no loanId/txnKind.
+    const untagged = txns.filter(t =>
+      !t.txnKind &&
+      !t.loanId &&
+      t.type === 'expense' &&
+      (t.description || '').trim() === ('EMI - ' + loan.name)
+    ).sort((a, b) => a.date.localeCompare(b.date)); // oldest first → assign emiNo 1,2,3...
+
+    // Already-tagged EMI numbers for this loan (to avoid duplicate emiNo)
+    const usedNos = new Set(
+      txns
+        .filter(t => t.txnKind === 'loan-emi' && t.loanId === loan.id && Number.isFinite(+t.emiNo))
+        .map(t => +t.emiNo)
+    );
+
+    let nextNo = 1;
+    untagged.forEach(t => {
+      while (usedNos.has(nextNo)) nextNo++;
+      const idx = txns.indexOf(t);
+      txns[idx] = { ...t, loanId: loan.id, emiNo: nextNo, txnKind: 'loan-emi', isSystem: true };
+      usedNos.add(nextNo);
+      nextNo++;
+      txnsChanged = true;
+    });
+
+    // ── Step 2: migrate paidEMIs[] on the loan object ────────────────────
+    // paidEMIs[] is a legacy array that stored paid EMI numbers directly on
+    // the loan. For each entry, create a proper transaction if one doesn't exist.
+    const legacyPaid = loan.paidEMIs || [];
+    if (legacyPaid.length) {
+      const schedule = DB.amortSchedule(loan.principal, loan.rate, loan.months, loan.startDate);
+      const emi = DB.calcEMI(loan.principal, loan.rate, loan.months);
+      const loanCatId = DB.getCategories().find(c => c.id === 'c17' || c.name === 'Loan EMI')?.id || 'c17';
+      const taggedNos = new Set(
+        txns
+          .filter(t => t.txnKind === 'loan-emi' && t.loanId === loan.id && Number.isFinite(+t.emiNo))
+          .map(t => +t.emiNo)
+      );
+      legacyPaid.forEach(n => {
+        if (!taggedNos.has(+n)) {
+          const sched = schedule.find(s => s.n === +n);
+          txns.unshift({
+            id: DB.uuid(), type: 'expense', amount: emi,
+            categoryId: loanCatId,
+            description: 'EMI - ' + loan.name,
+            date: sched ? sched.date : loan.startDate,
+            payment: 'net-banking',
+            loanId: loan.id, emiNo: +n, txnKind: 'loan-emi',
+            lentTo: '', transferTo: '', lentSettled: false,
+            isSystem: true, createdAt: new Date().toISOString(),
+          });
+          taggedNos.add(+n);
+          txnsChanged = true;
+        }
+      });
+      // Clear the legacy array so we never re-process it
+      loan.paidEMIs = [];
+      loansChanged = true;
+    }
+  });
+
+  if (txnsChanged) DB.saveTransactions(txns);
+  if (loansChanged) DB.saveLoans(loans);
+}
+
 // ── Init ───────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  migrateLoanEMIs();
   backfillTransactionLinks();
   initNav();
   initModal();
