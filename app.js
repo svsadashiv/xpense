@@ -20,10 +20,25 @@ let expandedCards = new Set();
 let drillCat      = null;
 let charts        = {};
 
+// ── XSS Sanitiser ─────────────────────────────────────────────────────
+// All user-supplied strings inserted into innerHTML must go through this.
+function escapeHTML(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────
 let pinBuffer = '';
 let pinSetup  = false;
 let pinConfirm = '';
+let pinAttempts = 0;
+let pinLockedUntil = 0;
+const PIN_MAX_ATTEMPTS = 5;
+const PIN_LOCKOUT_MS   = 30000; // 30 seconds
 
 function initAuth() {
   // Replace each button with a fresh clone to remove any existing listeners,
@@ -56,7 +71,7 @@ function updatePinDots() {
   dots.forEach((dot, i) => dot.classList.toggle('filled', i < pinBuffer.length));
 }
 
-function handlePinComplete() {
+async function handlePinComplete() {
   const label = document.getElementById('pin-label');
   if (pinSetup) {
     if (!pinConfirm) {
@@ -66,7 +81,7 @@ function handlePinComplete() {
       label.textContent = 'Confirm your PIN';
     } else {
       if (pinBuffer === pinConfirm) {
-        DB.setPin(pinBuffer);
+        await DB.setPin(pinBuffer);
         showApp();
       } else {
         label.textContent = "PINs don't match. Try again.";
@@ -77,12 +92,29 @@ function handlePinComplete() {
       }
     }
   } else {
-    if (DB.verifyPin(pinBuffer)) {
+    const now = Date.now();
+    if (now < pinLockedUntil) {
+      const secsLeft = Math.ceil((pinLockedUntil - now) / 1000);
+      label.textContent = `Too many attempts. Try again in ${secsLeft}s.`;
+      label.classList.add('error');
+      pinBuffer = '';
+      updatePinDots();
+      return;
+    }
+    if (await DB.verifyPin(pinBuffer)) {
+      pinAttempts = 0;
       showApp();
     } else {
-      label.textContent = 'Incorrect PIN. Try again.';
+      pinAttempts++;
+      if (pinAttempts >= PIN_MAX_ATTEMPTS) {
+        pinLockedUntil = Date.now() + PIN_LOCKOUT_MS;
+        pinAttempts = 0;
+        label.textContent = `Too many attempts. Locked for 30s.`;
+      } else {
+        label.textContent = `Incorrect PIN. ${PIN_MAX_ATTEMPTS - pinAttempts} attempt(s) left.`;
+      }
       label.classList.add('error');
-      setTimeout(() => { label.classList.remove('error'); label.textContent = 'Enter PIN to continue'; }, 1000);
+      setTimeout(() => { label.classList.remove('error'); label.textContent = 'Enter PIN to continue'; }, 1500);
       pinBuffer = '';
       updatePinDots();
     }
@@ -203,12 +235,12 @@ function renderDashboard() {
   let pendingHTML = '';
   if (Object.keys(pendingByPerson).length) {
     const personRows = Object.entries(pendingByPerson).map(([name, amt]) => {
-      const safeName = name.replace(/\\/g,'').replace(/'/g,'\\x27');
+      const safeName = escapeHTML(name);
       return '<div class="lent-row">' +
-        '<span style="font-weight:600">👤 ' + name + '</span>' +
+        '<span style="font-weight:600">👤 ' + safeName + '</span>' +
         '<span style="font-size:12px;color:#92400E">Pending</span>' +
         '<span style="font-weight:700;color:#D97706">' + DB.fmtINR(amt) + '</span>' +
-        '<button class="btn btn-sm btn-success" onclick="openSettleByPerson(\'' + safeName + '\')">Settle</button>' +
+        '<button class="btn btn-sm btn-success" onclick="openSettleByPerson(\'' + safeName.replace(/'/g, '&#x27;') + '\')">Settle</button>' +
         '</div>';
     }).join('');
     const pendingTotal = Object.values(pendingByPerson).reduce((a,b)=>a+b,0);
@@ -390,16 +422,16 @@ function txnRowHTML(t, cats, showActions = false) {
   ].filter(Boolean).join(' · ');
 
   return `
-  <div class="txn-row" id="txn-${t.id}">
+  <div class="txn-row" id="txn-${escapeHTML(t.id)}">
     <div class="txn-icon" style="background:${cat?.color||'#8E8E93'}22">${cat?.icon||'💳'}</div>
     <div class="txn-info">
-      <div class="txn-name">${t.description || cat?.name || 'Transaction'}</div>
-      <div class="txn-meta">${subtitle}</div>
+      <div class="txn-name">${escapeHTML(t.description || cat?.name || 'Transaction')}</div>
+      <div class="txn-meta">${escapeHTML(subtitle)}</div>
     </div>
     <div class="txn-amount" style="color:${amtColor}">${amtPrefix}${DB.fmtINR(t.amount)}</div>
     ${showActions ? `<div class="txn-actions">
-      <button class="icon-btn icon-btn-edit" onclick="openEditTransaction('${t.id}')" title="Edit">✏️</button>
-      <button class="icon-btn icon-btn-del" onclick="deleteTransaction('${t.id}')" title="Delete">🗑️</button>
+      <button class="icon-btn icon-btn-edit" onclick="openEditTransaction('${escapeHTML(t.id)}')" title="Edit">✏️</button>
+      <button class="icon-btn icon-btn-del" onclick="deleteTransaction('${escapeHTML(t.id)}')" title="Delete">🗑️</button>
     </div>` : ''}
   </div>`;
 }
@@ -496,16 +528,16 @@ function loanCardHTML(l, txns) {
     : '';
 
   return `
-  <div class="card loan-card" id="loan-${l.id}">
+  <div class="card loan-card" id="loan-${escapeHTML(l.id)}">
     <div class="loan-header">
       <div>
-        <div class="loan-title">${l.name}</div>
-        <div style="font-size:13px;color:var(--text3);margin-top:3px">🏦 ${l.lender} · ${l.rate}% p.a. ${gstBadge}</div>
+        <div class="loan-title">${escapeHTML(l.name)}</div>
+        <div style="font-size:13px;color:var(--text3);margin-top:3px">🏦 ${escapeHTML(l.lender)} · ${escapeHTML(String(l.rate))}% p.a. ${gstBadge}</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <span class="loan-type-badge">${l.type}</span>
-        <button class="icon-btn icon-btn-edit" onclick="openEditLoan('${l.id}')" title="Edit Loan">✏️</button>
-        <button class="icon-btn icon-btn-del" onclick="deleteLoan('${l.id}')">🗑️</button>
+        <span class="loan-type-badge">${escapeHTML(l.type)}</span>
+        <button class="icon-btn icon-btn-edit" onclick="openEditLoan('${escapeHTML(l.id)}')" title="Edit Loan">✏️</button>
+        <button class="icon-btn icon-btn-del" onclick="deleteLoan('${escapeHTML(l.id)}')">🗑️</button>
       </div>
     </div>
     <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text3);margin-bottom:4px">
@@ -618,9 +650,9 @@ function creditCardHTML(c) {
       <div style="position:relative">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
           <div>
-            <div style="font-size:14px;font-weight:600;opacity:.9">${c.bank}</div>
-            <div style="font-family:'DM Mono',monospace;font-size:15px;margin-top:8px;letter-spacing:2px">•••• •••• •••• ${c.last4}</div>
-            <div style="font-size:13px;opacity:.75;margin-top:3px">${c.name}</div>
+            <div style="font-size:14px;font-weight:600;opacity:.9">${escapeHTML(c.bank)}</div>
+            <div style="font-family:'DM Mono',monospace;font-size:15px;margin-top:8px;letter-spacing:2px">•••• •••• •••• ${escapeHTML(c.last4)}</div>
+            <div style="font-size:13px;opacity:.75;margin-top:3px">${escapeHTML(c.name)}</div>
           </div>
           <div style="text-align:right">
             ${overdue ? '<div style="background:rgba(255,200,0,.3);padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;margin-bottom:6px">⚠ OVERDUE</div>' : ''}
@@ -719,14 +751,14 @@ function goalCardHTML(g, currentSaved) {
   return `
   <div class="card goal-card">
     <div class="goal-header">
-      <div class="goal-icon" style="background:${g.color}22">${g.icon}</div>
+      <div class="goal-icon" style="background:${g.color}22">${escapeHTML(g.icon)}</div>
       <div>
-        <div class="goal-title">${g.name}</div>
+        <div class="goal-title">${escapeHTML(g.name)}</div>
         <div class="goal-target">Target: ${DB.fmtDate(g.targetDate)}</div>
       </div>
       <div style="display:flex;gap:6px;margin-left:auto">
-        <button class="icon-btn icon-btn-edit" onclick="openEditGoal('${g.id}')">✏️</button>
-        <button class="icon-btn icon-btn-del" onclick="deleteGoal('${g.id}')">🗑️</button>
+        <button class="icon-btn icon-btn-edit" onclick="openEditGoal('${escapeHTML(g.id)}')">✏️</button>
+        <button class="icon-btn icon-btn-del" onclick="deleteGoal('${escapeHTML(g.id)}')">🗑️</button>
       </div>
     </div>
     <div class="goal-progress-row">
@@ -734,7 +766,7 @@ function goalCardHTML(g, currentSaved) {
       <div class="goal-pct" style="color:${g.color}">${pct.toFixed(1)}%</div>
     </div>
     <div class="goal-amounts"><span>${DB.fmtINR(currentSaved)} saved</span><span>${DB.fmtINR(g.target - currentSaved)} remaining</span></div>
-    <button class="btn btn-secondary btn-sm mt-16" style="width:100%" onclick="openAddToGoal('${g.id}')">+ Add Funds</button>
+    <button class="btn btn-secondary btn-sm mt-16" style="width:100%" onclick="openAddToGoal('${escapeHTML(g.id)}')">+ Add Funds</button>
   </div>`;
 }
 
@@ -1163,7 +1195,7 @@ function openAddTransaction(editId = null) {
     '</div>' +
     '<div class="form-group">' +
       '<label class="form-label">Description</label>' +
-      '<input class="form-input" id="txn-desc" type="text" placeholder="What was this for?" value="'+(edit?edit.description||'':'')+'" />' +
+      '<input class="form-input" id="txn-desc" type="text" placeholder="What was this for?" value="'+(edit ? escapeHTML(edit.description||'') : '')+'" />' +
       '<div style="margin-top:6px;font-size:12px;color:var(--text3)">' +
         'Tip: use <strong>Savings: Goal Name</strong> or <strong>EMI - Loan Name</strong> for auto-linking.' +
       '</div>' +
@@ -1180,7 +1212,7 @@ function openAddTransaction(editId = null) {
 
     '<div id="txn-lent-group" class="form-group" style="'+(type==='lent'?'':'display:none')+'">' +
       '<label class="form-label" id="lent-person-label">Person\'s Name</label>' +
-      '<input class="form-input" id="txn-lent-to" type="text" placeholder="Person\'s name" value="'+(edit?edit.lentTo||'':'')+'" />' +
+      '<input class="form-input" id="txn-lent-to" type="text" placeholder="Person\'s name" value="'+(edit ? escapeHTML(edit.lentTo||'') : '')+'" />' +
       '<div id="lent-suggestions" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px"></div>' +
     '</div>' +
 
@@ -1245,7 +1277,7 @@ function populateLentSuggestions(sub) {
         .map(t => t.lentTo)
   )];
   container.innerHTML = people.map(name =>
-    '<button class="filter-chip" style="font-size:12px" onclick="document.getElementById(\'txn-lent-to\').value=\''+name+'\'">'+name+'</button>'
+    '<button class="filter-chip" style="font-size:12px" onclick="document.getElementById(\'txn-lent-to\').value=\'' + escapeHTML(name).replace(/'/g,'&#x27;') + '\'">' + escapeHTML(name) + '</button>'
   ).join('');
 }
 
@@ -1891,12 +1923,12 @@ function removePin() {
   renderTab('settings');
 }
 
-function savePin() {
+async function savePin() {
   const p1 = document.getElementById('new-pin').value;
   const p2 = document.getElementById('confirm-pin').value;
   if (p1.length < 4) { showToast('PIN must be at least 4 digits','error'); return; }
   if (p1 !== p2) { showToast("PINs don't match",'error'); return; }
-  DB.setPin(p1);
+  await DB.setPin(p1);
   closeModal();
   showToast('PIN set ✓','success');
   renderTab('settings');

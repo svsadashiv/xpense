@@ -86,19 +86,20 @@ const DB = {
   saveSettings(d)     { this.save(this.KEYS.settings, d); },
 
   // ── PIN ────────────────────────────────────────────────────────────
-  hashPIN(pin) {
-    // Simple hash for web (not crypto-grade, use as convenience lock only)
-    let h = 0;
-    for (let i = 0; i < pin.length; i++) {
-      h = Math.imul(31, h) + pin.charCodeAt(i) | 0;
-    }
-    return h.toString(36);
+  // Uses SHA-256 via the Web Crypto API (available in all modern browsers).
+  // setPin / verifyPin are async; callers must await them.
+  async hashPIN(pin) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(pin);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   },
-  setPin(pin)       { localStorage.setItem(this.KEYS.pin, this.hashPIN(pin)); },
-  getPin()          { return localStorage.getItem(this.KEYS.pin); },
-  verifyPin(pin)    { return this.getPin() === this.hashPIN(pin); },
-  hasPin()          { return !!this.getPin(); },
-  clearPin()        { localStorage.removeItem(this.KEYS.pin); },
+  async setPin(pin)    { localStorage.setItem(this.KEYS.pin, await this.hashPIN(pin)); },
+  getPin()             { return localStorage.getItem(this.KEYS.pin); },
+  async verifyPin(pin) { return this.getPin() === await this.hashPIN(pin); },
+  hasPin()             { return !!this.getPin(); },
+  clearPin()           { localStorage.removeItem(this.KEYS.pin); },
 
   // ── Helpers ────────────────────────────────────────────────────────
   uuid() { return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2); },
@@ -233,34 +234,43 @@ const DB = {
 
   importJSON(text) {
     const data = JSON.parse(text);
+    // Validate top-level shape — must be a plain object, not an array or primitive
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('Invalid backup format');
+    }
     if (data.transactions) {
+      if (!Array.isArray(data.transactions)) throw new Error('Invalid transactions data');
       const existing = this.getTransactions();
       const existingIds = new Set(existing.map(t => t.id));
-      const merged = [...existing, ...data.transactions.filter(t => !existingIds.has(t.id))];
+      const merged = [...existing, ...data.transactions.filter(t => t && typeof t === 'object' && !existingIds.has(t.id))];
       this.saveTransactions(merged);
     }
     if (data.categories && data.categories.length) {
+      if (!Array.isArray(data.categories)) throw new Error('Invalid categories data');
       // Merge imported custom categories with current list
       const current = this.getCategories();
       const currentIds = new Set(current.map(c => c.id));
-      const toAdd = data.categories.filter(c => c.custom && !currentIds.has(c.id));
+      const toAdd = data.categories.filter(c => c && typeof c === 'object' && c.custom && !currentIds.has(c.id));
       if (toAdd.length) this.saveCategories([...current, ...toAdd]);
     }
     if (data.cards) {
+      if (!Array.isArray(data.cards)) throw new Error('Invalid cards data');
       const existing = this.getCards();
       const eIds = new Set(existing.map(c => c.id));
-      this.saveCards([...existing, ...data.cards.filter(c => !eIds.has(c.id))]);
+      this.saveCards([...existing, ...data.cards.filter(c => c && typeof c === 'object' && !eIds.has(c.id))]);
     }
     if (data.loans) {
+      if (!Array.isArray(data.loans)) throw new Error('Invalid loans data');
       const existing = this.getLoans();
       const eIds = new Set(existing.map(l => l.id));
-      this.saveLoans([...existing, ...data.loans.filter(l => !eIds.has(l.id))]);
+      this.saveLoans([...existing, ...data.loans.filter(l => l && typeof l === 'object' && !eIds.has(l.id))]);
     }
     if (data.budgets) data.budgets.forEach(b => this.upsertBudget(b));
     if (data.goals) {
+      if (!Array.isArray(data.goals)) throw new Error('Invalid goals data');
       const existing = this.getGoals();
       const eIds = new Set(existing.map(g => g.id));
-      this.saveGoals([...existing, ...data.goals.filter(g => !eIds.has(g.id))]);
+      this.saveGoals([...existing, ...data.goals.filter(g => g && typeof g === 'object' && !eIds.has(g.id))]);
     }
   },
 
@@ -446,19 +456,21 @@ const DB = {
       const clean = s => (s||'').replace(/^"|"$/g,'').trim();
       const dateStr = clean(cols[0]);
       const typeRaw = clean(cols[1]).toLowerCase();
-      const catName = clean(cols[2]);
+      const catName = clean(cols[2]).slice(0, 100);
       const amount  = parseFloat(clean(cols[3]).replace(/[^0-9.]/g,''));
-      if (!dateStr || isNaN(amount) || amount <= 0) return;
+      // Validate date is a real ISO date (YYYY-MM-DD) to prevent injection
+      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || isNaN(new Date(dateStr).getTime())) return;
+      if (isNaN(amount) || amount <= 0) return;
       const type = ['expense','income','transfer','lent'].includes(typeRaw) ? typeRaw : 'expense';
       const cat  = cats.find(c => c.name.toLowerCase() === catName.toLowerCase()) || cats.find(c => c.type === type) || cats[0];
       txns.push({
         id: this.uuid(), type, amount,
         categoryId:  cat?.id || '',
         date:        dateStr,
-        payment:     clean(cols[4]) || 'cash',
-        description: clean(cols[5]) || '',
-        lentTo:      clean(cols[6]) || '',
-        transferTo:  clean(cols[7]) || '',
+        payment:     (clean(cols[4]) || 'cash').slice(0, 50),
+        description: clean(cols[5]).slice(0, 200) || '',
+        lentTo:      clean(cols[6]).slice(0, 100) || '',
+        transferTo:  clean(cols[7]).slice(0, 100) || '',
         lentSettled: false,
         createdAt:   new Date().toISOString(),
       });
