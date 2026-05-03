@@ -481,13 +481,28 @@ function formatDateHeader(iso) {
 function renderLoans() {
   const loans = DB.getLoans();
   const txns = DB.getTransactions();
-  const totalPrincipal = loans.reduce((s,l)=>s+l.principal,0);
-  // Only sum EMI for loans that are not fully repaid
-  const totalEMI = loans.reduce((s,l)=>{
-    const paid = getLoanPaidEmiNumbers(l, txns);
-    const isFullyRepaid = paid.length >= l.months;
-    return isFullyRepaid ? s : s + DB.calcEMI(l.principal, l.rate, l.months);
-  }, 0);
+
+  const activeLoans    = loans.filter(l => getLoanPaidEmiNumbers(l, txns).length < l.months);
+  const completedLoans = loans.filter(l => getLoanPaidEmiNumbers(l, txns).length >= l.months);
+
+  const totalPrincipal = activeLoans.reduce((s,l)=>s+l.principal,0);
+  const totalEMI       = activeLoans.reduce((s,l)=>s+DB.calcEMI(l.principal,l.rate,l.months),0);
+
+  const completedSection = completedLoans.length ? `
+  <div style="margin-top:24px">
+    <button
+      class="btn btn-secondary"
+      style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;font-weight:600"
+      onclick="toggleCompletedLoans()"
+      id="completed-loans-btn"
+    >
+      <span>✅ Completed Loans (${completedLoans.length})</span>
+      <span id="completed-loans-chevron" style="font-size:14px;transition:transform .2s">▼</span>
+    </button>
+    <div id="completed-loans-list" style="display:none;margin-top:12px">
+      ${completedLoans.map(l => loanCardHTML(l, txns)).join('')}
+    </div>
+  </div>` : '';
 
   return `
   <div class="page-header">
@@ -495,14 +510,27 @@ function renderLoans() {
     <button class="btn btn-primary" onclick="openAddLoan()">+ Add Loan</button>
   </div>
 
-  ${loans.length ? `
+  ${activeLoans.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
     <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Principal</div><div class="kpi-value">${DB.fmtINR(totalPrincipal)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
   </div>` : ''}
 
-  ${loans.length === 0 ? `<div class="empty-state"><div class="empty-icon">🏦</div><p>No active loans. Add your first loan to track EMIs.</p></div>` :
-    loans.map(l => loanCardHTML(l, txns)).join('')}`;
+  ${activeLoans.length === 0 && completedLoans.length === 0
+    ? `<div class="empty-state"><div class="empty-icon">🏦</div><p>No active loans. Add your first loan to track EMIs.</p></div>`
+    : activeLoans.length === 0
+      ? `<div class="empty-state"><div class="empty-icon">🎉</div><p>All loans repaid!</p></div>`
+      : activeLoans.map(l => loanCardHTML(l, txns)).join('')}
+
+  ${completedSection}`;
+}
+
+function toggleCompletedLoans() {
+  const list     = document.getElementById('completed-loans-list');
+  const chevron  = document.getElementById('completed-loans-chevron');
+  const isHidden = list.style.display === 'none';
+  list.style.display    = isHidden ? 'block' : 'none';
+  chevron.style.transform = isHidden ? 'rotate(180deg)' : '';
 }
 
 function loanCardHTML(l, txns) {
