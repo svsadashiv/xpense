@@ -616,13 +616,67 @@ function loanCardHTML(l, txns) {
 
 function afterLoans() {}
 
+// ── Card date helpers ──────────────────────────────────────────────────
+// Given a day-of-month (1-31), return the actual Date for the *current billing cycle*.
+// Banks always refer to the current month, but if the day has already passed this month
+// the next occurrence is next month. If the day doesn't exist (e.g. 31 in April),
+// the last day of that month is used — exactly like real banks.
+function cardCycleDate(day, referenceDate) {
+  if (!day || day < 1 || day > 31) return null;
+  const ref = referenceDate ? new Date(referenceDate) : new Date();
+  const y   = ref.getFullYear();
+  const m   = ref.getMonth(); // 0-indexed
+  // Clamp day to last day of current month
+  const lastDayThisMonth = new Date(y, m + 1, 0).getDate();
+  const clampedThisMonth = Math.min(day, lastDayThisMonth);
+  const thisMonthDate = new Date(y, m, clampedThisMonth);
+  // If day is still upcoming or today — use current month; otherwise next month
+  if (thisMonthDate >= new Date(ref.getFullYear(), ref.getMonth(), ref.getDate())) {
+    return thisMonthDate;
+  }
+  // Next month
+  const nm = m + 1;
+  const ny = nm > 11 ? y + 1 : y;
+  const nmIdx = nm > 11 ? 0 : nm;
+  const lastDayNextMonth = new Date(ny, nmIdx + 1, 0).getDate();
+  return new Date(ny, nmIdx, Math.min(day, lastDayNextMonth));
+}
+
+function fmtCardDay(day) {
+  if (!day) return '—';
+  const suffix = (d) => {
+    if (d >= 11 && d <= 13) return 'th';
+    switch (d % 10) { case 1: return 'st'; case 2: return 'nd'; case 3: return 'rd'; default: return 'th'; }
+  };
+  return day + suffix(day);
+}
+
+// Returns { billDate, dueDate } as Date objects (or null) for the current cycle
+function cardCurrentCycleDates(c) {
+  const billDate = c.billDay ? cardCycleDate(c.billDay) : null;
+  // Due date is computed relative to bill date if both days are set; otherwise independently
+  let dueDate = null;
+  if (c.dueDay) {
+    if (billDate) {
+      // Due date is always after bill date — if dueDay <= billDay it wraps to next month
+      const bd = billDate;
+      const tryThisMonth = cardCycleDate(c.dueDay, bd);
+      dueDate = tryThisMonth >= bd ? tryThisMonth : cardCycleDate(c.dueDay, new Date(bd.getFullYear(), bd.getMonth() + 1, 1));
+    } else {
+      dueDate = cardCycleDate(c.dueDay);
+    }
+  }
+  return { billDate, dueDate };
+}
+
 // ── Cards ──────────────────────────────────────────────────────────────
 function renderCards() {
   const cats = DB.getCategories();
   const cards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
   const totalDue = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
   const totalLimit = cards.reduce((s,c) => s + (c.limit||0), 0);
-  const overdueCards = cards.filter(c => new Date(c.dueDate) < new Date() && (c.dueBalance||0) > 0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const overdueCards = cards.filter(c => { const {dueDate} = cardCurrentCycleDates(c); return dueDate ? dueDate < today && (c.dueBalance||0) > 0 : false; });
   const totalUtil = totalLimit > 0 ? Math.min((totalDue / totalLimit) * 100, 100) : 0;
   return `
   <div class="page-header">
@@ -646,7 +700,28 @@ function creditCardHTML(c) {
   const util = Math.min((due / c.limit) * 100, 100);
   const utilColor = util < 30 ? 'var(--green)' : util < 70 ? 'var(--orange)' : 'var(--red)';
   const isOpen = expandedCards.has(c.id);
-  const overdue = new Date(c.dueDate) < new Date() && due > 0;
+
+  // Bill date & due date computed from day-of-month for current cycle
+  const { billDate, dueDate } = cardCurrentCycleDates(c);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const overdue = dueDate ? dueDate < today && due > 0 : (c.dueDate ? new Date(c.dueDate) < new Date() && due > 0 : false);
+
+  // Days until due / bill
+  function daysLabel(d) {
+    if (!d) return null;
+    const diff = Math.round((d - today) / 86400000);
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Tomorrow';
+    if (diff < 0)  return Math.abs(diff) + 'd ago';
+    return 'in ' + diff + 'd';
+  }
+
+  const dueDateDisplay  = dueDate  ? DB.fmtDate(dueDate.toISOString().slice(0,10))  + ' (' + daysLabel(dueDate)  + ')' : (c.dueDate ? DB.fmtDate(c.dueDate) : '—');
+  const billDateDisplay = billDate ? DB.fmtDate(billDate.toISOString().slice(0,10)) + ' (' + daysLabel(billDate) + ')' : '—';
+
+  // Compact on-card display (shown in the card face strip)
+  const cardStripDue  = dueDate  ? dueDate.toLocaleDateString('en-IN',{day:'numeric',month:'short'})  : (c.dueDate ? DB.fmtDate(c.dueDate) : '—');
+  const cardStripBill = billDate ? billDate.toLocaleDateString('en-IN',{day:'numeric',month:'short'}) : '—';
 
   const detail = isOpen ? `
     <div style="padding:16px;border-top:1px solid var(--border)">
@@ -661,8 +736,20 @@ function creditCardHTML(c) {
         </div>
         <div class="util-bar"><div class="util-fill" style="width:${util}%;background:${utilColor}"></div></div>
       </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div style="background:var(--bg);border-radius:8px;padding:10px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:2px">🗓️ Bill Date</div>
+          <div style="font-size:13px;font-weight:600;color:var(--text1)">${c.billDay ? fmtCardDay(c.billDay) + ' of month' : '—'}</div>
+          <div style="font-size:12px;color:var(--blue);margin-top:2px">${billDateDisplay}</div>
+        </div>
+        <div style="background:var(--bg);border-radius:8px;padding:10px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:2px">💳 Payment Due</div>
+          <div style="font-size:13px;font-weight:600;color:var(--text1)">${c.dueDay ? fmtCardDay(c.dueDay) + ' of month' : '—'}</div>
+          <div style="font-size:12px;color:${overdue ? 'var(--red)' : 'var(--orange)'};margin-top:2px">${dueDateDisplay}</div>
+        </div>
+      </div>
       <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
-        📅 Due ${DB.fmtDate(c.dueDate)} &nbsp;·&nbsp; Min ${DB.fmtFull(c.minPayment||0)} &nbsp;·&nbsp; ${c.rate||36}% p.a.
+        Min ${DB.fmtFull(c.minPayment||0)} &nbsp;·&nbsp; ${c.rate||36}% p.a.
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-primary" style="flex:1" onclick="openSettleCard('${c.id}')">💳 Pay Now</button>
@@ -688,10 +775,11 @@ function creditCardHTML(c) {
             <div style="font-size:18px;font-weight:700">${DB.fmtINR(due)}</div>
           </div>
         </div>
-        <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px">
+        <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px;flex-wrap:wrap">
           <span><span style="opacity:.7">Limit </span><strong>${DB.fmtINR(c.limit)}</strong></span>
           <span><span style="opacity:.7">Available </span><strong>${DB.fmtINR(c.limit - due)}</strong></span>
-          <span><span style="opacity:.7">Due </span><strong>${DB.fmtDate(c.dueDate)}</strong></span>
+          ${billDate ? `<span><span style="opacity:.7">Bill </span><strong>${cardStripBill}</strong></span>` : ''}
+          <span><span style="opacity:.7">Due </span><strong>${cardStripDue}</strong></span>
         </div>
         <div style="height:4px;background:rgba(255,255,255,.25);border-radius:2px;overflow:hidden">
           <div style="height:100%;background:white;width:${util.toFixed(1)}%;border-radius:2px;opacity:.85"></div>
@@ -707,7 +795,29 @@ function creditCardHTML(c) {
 }
 
 
-function afterCards() {}
+function afterCards() {
+  // Wire up live preview for bill/due day inputs (opened via openAddCard)
+  // The modal may not be open when tab renders, so we use event delegation on the modal body
+  const modal = document.getElementById('modal-body');
+  if (modal) {
+    modal.addEventListener('input', _updateCardCyclePreview);
+  }
+}
+
+function _updateCardCyclePreview() {
+  const billDayEl = document.getElementById('cc-bill-day');
+  const dueDayEl  = document.getElementById('cc-due-day');
+  const preview   = document.getElementById('cc-cycle-preview');
+  if (!preview) return;
+  const billDay = parseInt(billDayEl?.value) || null;
+  const dueDay  = parseInt(dueDayEl?.value)  || null;
+  if (!billDay && !dueDay) { preview.textContent = ''; return; }
+  const { billDate, dueDate } = cardCurrentCycleDates({ billDay, dueDay });
+  const parts = [];
+  if (billDate) parts.push('Bill: ' + billDate.toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'}));
+  if (dueDate)  parts.push('Due: '  + dueDate.toLocaleDateString('en-IN',  {day:'numeric', month:'short', year:'numeric'}));
+  preview.textContent = parts.length ? '\uD83D\uDCC5 This cycle \u2192 ' + parts.join(' \u00B7 ') : '';
+}
 
 // ── Budget ─────────────────────────────────────────────────────────────
 function renderBudget() {
@@ -1621,7 +1731,22 @@ function openAddCard(editId = null) {
   </div>
   <div class="form-row">
     <div class="form-group"><label class="form-label">Interest Rate (% p.a.)</label><input class="form-input" id="cc-rate" type="number" step="0.1" placeholder="36" value="${edit?.rate||''}" /></div>
-    <div class="form-group"><label class="form-label">Due Date</label><input class="form-input" id="cc-due" type="date" value="${edit?.dueDate||DB.today()}" /></div>
+    <div class="form-group">
+      <label class="form-label">Bill Date <span style="font-size:11px;color:var(--text3)">(day of month)</span></label>
+      <input class="form-input" id="cc-bill-day" type="number" min="1" max="31" placeholder="e.g. 15" value="${edit?.billDay||''}" />
+    </div>
+  </div>
+  <div class="form-row">
+    <div class="form-group">
+      <label class="form-label">Payment Due Day <span style="font-size:11px;color:var(--text3)">(day of month)</span></label>
+      <input class="form-input" id="cc-due-day" type="number" min="1" max="31" placeholder="e.g. 5" value="${edit?.dueDay||''}" />
+      <div style="margin-top:5px;font-size:12px;color:var(--blue)" id="cc-cycle-preview"></div>
+    </div>
+    <div class="form-group" style="display:flex;align-items:flex-end">
+      <div style="background:var(--blue-light);border-radius:8px;padding:10px;width:100%;font-size:12px;color:var(--blue);line-height:1.6">
+        💡 Enter just the <strong>day number</strong> (1–31). The app calculates the actual date each month — just like your bank does. If the day doesn't exist (e.g. 31 in April), it uses the last day.
+      </div>
+    </div>
   </div>
   <div class="form-group"><label class="form-label">Card Color</label>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -1635,6 +1760,11 @@ function openAddCard(editId = null) {
     <button class="btn btn-primary" onclick="saveCard()">${edit?'Update':'Add'} Card</button>
   </div>`;
   openModal(edit ? 'Edit Card' : 'Add Credit Card', body);
+  // Wire live preview after modal is in DOM
+  ['cc-bill-day','cc-due-day'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', _updateCardCyclePreview);
+  });
+  _updateCardCyclePreview();
 }
 
 function openEditCard(id) { openAddCard(id); }
@@ -1651,13 +1781,17 @@ function saveCard() {
   const limit = parseFloat(document.getElementById('cc-limit').value);
   if (!name || !limit) { showToast('Fill required fields', 'error'); return; }
   const id = document.getElementById('cc-id').value;
+  const billDay = parseInt(document.getElementById('cc-bill-day').value) || null;
+  const dueDay  = parseInt(document.getElementById('cc-due-day').value)  || null;
+  if (billDay && (billDay < 1 || billDay > 31)) { showToast('Bill day must be 1–31', 'error'); return; }
+  if (dueDay  && (dueDay  < 1 || dueDay  > 31)) { showToast('Due day must be 1–31', 'error'); return; }
   const card = {
     id: id || DB.uuid(), name, bank: document.getElementById('cc-bank').value,
     last4: document.getElementById('cc-last4').value, limit,
     balance: fromPaise(toPaise(parseFloat(document.getElementById('cc-balance').value)||0)),
     minPayment: parseFloat(document.getElementById('cc-min').value)||0,
     rate: parseFloat(document.getElementById('cc-rate').value)||36,
-    dueDate: document.getElementById('cc-due').value,
+    billDay, dueDay,
     color: document.getElementById('cc-color').value,
   };
   let cards = DB.getCards();
