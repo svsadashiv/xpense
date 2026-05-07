@@ -617,29 +617,11 @@ function loanCardHTML(l, txns) {
 function afterLoans() {}
 
 // ── Card date helpers ──────────────────────────────────────────────────
-// Given a day-of-month (1-31), return the actual Date for the *current billing cycle*.
-// Banks always refer to the current month, but if the day has already passed this month
-// the next occurrence is next month. If the day doesn't exist (e.g. 31 in April),
-// the last day of that month is used — exactly like real banks.
-function cardCycleDate(day, referenceDate) {
-  if (!day || day < 1 || day > 31) return null;
-  const ref = referenceDate ? new Date(referenceDate) : new Date();
-  const y   = ref.getFullYear();
-  const m   = ref.getMonth(); // 0-indexed
-  // Clamp day to last day of current month
-  const lastDayThisMonth = new Date(y, m + 1, 0).getDate();
-  const clampedThisMonth = Math.min(day, lastDayThisMonth);
-  const thisMonthDate = new Date(y, m, clampedThisMonth);
-  // If day is still upcoming or today — use current month; otherwise next month
-  if (thisMonthDate >= new Date(ref.getFullYear(), ref.getMonth(), ref.getDate())) {
-    return thisMonthDate;
-  }
-  // Next month
-  const nm = m + 1;
-  const ny = nm > 11 ? y + 1 : y;
-  const nmIdx = nm > 11 ? 0 : nm;
-  const lastDayNextMonth = new Date(ny, nmIdx + 1, 0).getDate();
-  return new Date(ny, nmIdx, Math.min(day, lastDayNextMonth));
+// Returns the clamped date for a given day in a given year+month (0-indexed).
+// If the day exceeds the month's last day (e.g. 31 in April), it uses the last day.
+function _clampedDate(y, m, day) {
+  const last = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(day, last));
 }
 
 function fmtCardDay(day) {
@@ -651,21 +633,64 @@ function fmtCardDay(day) {
   return day + suffix(day);
 }
 
-// Returns { billDate, dueDate } as Date objects (or null) for the current cycle
+// Returns { billDate, dueDate } as Date objects (or null) for the *current active cycle*.
+//
+// How banks work:
+//   - Bill date (statement date): the day the statement is generated each month.
+//     The CURRENT bill date is the most recent one that has already occurred (or today).
+//     This anchors the cycle — it never jumps forward until the next statement is generated.
+//   - Due date: always computed relative to the last bill date.
+//     If dueDay > billDay  → same month as bill date  (e.g. bill 5th, due 25th)
+//     If dueDay <= billDay → next month after bill date (e.g. bill 25th, due 5th)
+//     This means due date is INDEPENDENT of whether today has passed the bill date.
 function cardCurrentCycleDates(c) {
-  const billDate = c.billDay ? cardCycleDate(c.billDay) : null;
-  // Due date is computed relative to bill date if both days are set; otherwise independently
-  let dueDate = null;
-  if (c.dueDay) {
-    if (billDate) {
-      // Due date is always after bill date — if dueDay <= billDay it wraps to next month
-      const bd = billDate;
-      const tryThisMonth = cardCycleDate(c.dueDay, bd);
-      dueDate = tryThisMonth >= bd ? tryThisMonth : cardCycleDate(c.dueDay, new Date(bd.getFullYear(), bd.getMonth() + 1, 1));
+  const today = new Date();
+  const ty = today.getFullYear(), tm = today.getMonth(), td = today.getDate();
+
+  // ── Bill date: last occurred (or today) ──────────────────────────────
+  let billDate = null;
+  if (c.billDay && c.billDay >= 1 && c.billDay <= 31) {
+    const thisMonthBill = _clampedDate(ty, tm, c.billDay);
+    if (thisMonthBill.getDate() <= td) {
+      // Bill day has occurred this month — use it
+      billDate = thisMonthBill;
     } else {
-      dueDate = cardCycleDate(c.dueDay);
+      // Bill day is still upcoming — use last month's bill date
+      const pm = tm - 1 < 0 ? 11 : tm - 1;
+      const py = tm - 1 < 0 ? ty - 1 : ty;
+      billDate = _clampedDate(py, pm, c.billDay);
     }
   }
+
+  // ── Due date: always relative to the last bill date ──────────────────
+  let dueDate = null;
+  if (c.dueDay && c.dueDay >= 1 && c.dueDay <= 31) {
+    if (billDate) {
+      const by = billDate.getFullYear(), bm = billDate.getMonth(), bd = billDate.getDate();
+      const billDayNum = c.billDay;
+      const dueDayNum  = c.dueDay;
+      if (dueDayNum > billDayNum) {
+        // Due is in the SAME month as the bill date
+        dueDate = _clampedDate(by, bm, dueDayNum);
+      } else {
+        // Due is in the NEXT month after the bill date
+        const nm = bm + 1 > 11 ? 0 : bm + 1;
+        const ny = bm + 1 > 11 ? by + 1 : by;
+        dueDate = _clampedDate(ny, nm, dueDayNum);
+      }
+    } else {
+      // No bill day set — just show dueDay in current month (or next if passed)
+      const thisMonth = _clampedDate(ty, tm, c.dueDay);
+      if (thisMonth.getDate() >= td) {
+        dueDate = thisMonth;
+      } else {
+        const nm = tm + 1 > 11 ? 0 : tm + 1;
+        const ny = tm + 1 > 11 ? ty + 1 : ty;
+        dueDate = _clampedDate(ny, nm, c.dueDay);
+      }
+    }
+  }
+
   return { billDate, dueDate };
 }
 
@@ -676,7 +701,7 @@ function renderCards() {
   const totalDue = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
   const totalLimit = cards.reduce((s,c) => s + (c.limit||0), 0);
   const today = new Date(); today.setHours(0,0,0,0);
-  const overdueCards = cards.filter(c => { const {dueDate} = cardCurrentCycleDates(c); return dueDate ? dueDate < today && (c.dueBalance||0) > 0 : false; });
+  const overdueCards = cards.filter(c => c._overdue);
   const totalUtil = totalLimit > 0 ? Math.min((totalDue / totalLimit) * 100, 100) : 0;
   return `
   <div class="page-header">
@@ -701,10 +726,11 @@ function creditCardHTML(c) {
   const utilColor = util < 30 ? 'var(--green)' : util < 70 ? 'var(--orange)' : 'var(--red)';
   const isOpen = expandedCards.has(c.id);
 
-  // Bill date & due date computed from day-of-month for current cycle
-  const { billDate, dueDate } = cardCurrentCycleDates(c);
+  // Bill date & due date pre-computed by cardsWithDue; fall back for direct calls
+  const billDate = c._billDate || cardCurrentCycleDates(c).billDate;
+  const dueDate  = c._dueDate  || cardCurrentCycleDates(c).dueDate;
   const today = new Date(); today.setHours(0,0,0,0);
-  const overdue = dueDate ? dueDate < today && due > 0 : (c.dueDate ? new Date(c.dueDate) < new Date() && due > 0 : false);
+  const overdue = c._overdue || false;
 
   // Days until due / bill
   function daysLabel(d) {
@@ -1204,8 +1230,55 @@ function cardDueFromTransactions(card, txns, cats) {
   const paid = txns.filter(t => isCreditCardPaydown(t, cats) && t.creditCardId === card.id).reduce((s,t)=>s+toPaise(t.amount), 0);
   return fromPaise(Math.max(0, opening + charged - paid));
 }
+
+// Returns true if there is an unpaid statement balance from the last cycle.
+// Logic mirrors how banks determine overdue:
+//   1. Compute statement balance = all charges up to & including bill date, minus
+//      all payments up to & including bill date, plus opening balance.
+//   2. Subtract any payments made after the bill date (post-bill payments clear the dues).
+//   3. If the result is still > 0 and today is past the due date → overdue.
+function isCardOverdue(card, txns, cats, billDate, dueDate) {
+  if (!dueDate) return false;
+  const today = new Date(); today.setHours(0,0,0,0);
+  if (dueDate >= today) return false; // due date not yet passed
+
+  if (!billDate) {
+    // No bill day configured — fall back to simple dueBalance check
+    return cardDueFromTransactions(card, txns, cats) > 0;
+  }
+
+  const billDateStr = billDate.toISOString().slice(0, 10);
+
+  // Statement balance: opening + charges on/before bill date − payments on/before bill date
+  const openingPaise = toPaise(card.balance || 0);
+  const chargedToStatement = txns
+    .filter(t => isCreditCardCharge(t) && t.creditCardId === card.id && t.date <= billDateStr)
+    .reduce((s, t) => s + toPaise(t.amount), 0);
+  const paidToStatement = txns
+    .filter(t => isCreditCardPaydown(t, cats) && t.creditCardId === card.id && t.date <= billDateStr)
+    .reduce((s, t) => s + toPaise(t.amount), 0);
+  const statementBalancePaise = Math.max(0, openingPaise + chargedToStatement - paidToStatement);
+
+  // Post-bill payments (after bill date, up to today) reduce the outstanding statement balance
+  const paidAfterBill = txns
+    .filter(t => isCreditCardPaydown(t, cats) && t.creditCardId === card.id && t.date > billDateStr)
+    .reduce((s, t) => s + toPaise(t.amount), 0);
+
+  const outstanding = Math.max(0, statementBalancePaise - paidAfterBill);
+  return outstanding > 0;
+}
+
 function cardsWithDue(cards, txns, cats) {
-  return cards.map(c => ({ ...c, dueBalance: cardDueFromTransactions(c, txns, cats) }));
+  return cards.map(c => {
+    const { billDate, dueDate } = cardCurrentCycleDates(c);
+    return {
+      ...c,
+      dueBalance: cardDueFromTransactions(c, txns, cats),
+      _billDate: billDate,
+      _dueDate: dueDate,
+      _overdue: isCardOverdue(c, txns, cats, billDate, dueDate),
+    };
+  });
 }
 function normText(s) {
   return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
