@@ -698,11 +698,12 @@ function cardCurrentCycleDates(c) {
 function renderCards() {
   const cats = DB.getCategories();
   const cards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
-  const totalDue = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
-  const totalLimit = cards.reduce((s,c) => s + (c.limit||0), 0);
+  const totalStatementDue = cards.reduce((s,c) => s + (c._statementDue||0), 0);
+  const totalOutstanding   = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
+  const totalLimit         = cards.reduce((s,c) => s + (c.limit||0), 0);
   const today = new Date(); today.setHours(0,0,0,0);
-  const overdueCards = cards.filter(c => c._overdue);
-  const totalUtil = totalLimit > 0 ? Math.min((totalDue / totalLimit) * 100, 100) : 0;
+  const overdueCards       = cards.filter(c => c._overdue);
+  const totalUtil          = totalLimit > 0 ? Math.min((totalOutstanding / totalLimit) * 100, 100) : 0;
   return `
   <div class="page-header">
     <div><div class="page-title">Credit Cards</div></div>
@@ -711,7 +712,8 @@ function renderCards() {
   ${cards.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
     <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">💳</div><div class="kpi-label">Total Cards</div><div class="kpi-value">${cards.length}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">💸</div><div class="kpi-label">Total Due</div><div class="kpi-value text-red">${DB.fmtINR(totalDue)}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">💸</div><div class="kpi-label">Stmt Due</div><div class="kpi-value text-red">${DB.fmtINR(totalStatementDue)}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#FFF7ED">🧾</div><div class="kpi-label">Total Outstanding</div><div class="kpi-value text-orange">${DB.fmtINR(totalOutstanding)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">📊</div><div class="kpi-label">Avg Utilization</div><div class="kpi-value text-orange">${totalUtil.toFixed(1)}%</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#E8F5E9">🏦</div><div class="kpi-label">Total Limit</div><div class="kpi-value text-green">${DB.fmtINR(totalLimit)}</div></div>
     ${overdueCards.length ? `<div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">⚠️</div><div class="kpi-label">Overdue Cards</div><div class="kpi-value text-orange">${overdueCards.length}</div></div>` : ''}
@@ -721,42 +723,80 @@ function renderCards() {
 }
 
 function creditCardHTML(c) {
-  const due = c.dueBalance || 0;
-  const util = Math.min((due / c.limit) * 100, 100);
+  // ── Cycle-aware balances (pre-computed by cardsWithDue) ───────────────
+  const statementDue     = c._statementDue    || 0;  // last bill minus post-bill payments
+  const newSpending      = c._newSpending     || 0;  // charges since bill date (unbilled)
+  const totalOutstanding = c.dueBalance       || 0;  // statementDue + newSpending
+  const overdue          = c._overdue         || false;
+
+  const util      = c.limit > 0 ? Math.min((totalOutstanding / c.limit) * 100, 100) : 0;
   const utilColor = util < 30 ? 'var(--green)' : util < 70 ? 'var(--orange)' : 'var(--red)';
-  const isOpen = expandedCards.has(c.id);
+  const isOpen    = expandedCards.has(c.id);
 
-  // Bill date & due date pre-computed by cardsWithDue; fall back for direct calls
-  const billDate = c._billDate || cardCurrentCycleDates(c).billDate;
-  const dueDate  = c._dueDate  || cardCurrentCycleDates(c).dueDate;
-  const today = new Date(); today.setHours(0,0,0,0);
-  const overdue = c._overdue || false;
+  const billDate = c._billDate instanceof Date ? c._billDate : (c._billDate ? new Date(c._billDate) : null);
+  const dueDate  = c._dueDate  instanceof Date ? c._dueDate  : (c._dueDate  ? new Date(c._dueDate)  : null);
+  const today    = new Date(); today.setHours(0,0,0,0);
 
-  // Days until due / bill
   function daysLabel(d) {
     if (!d) return null;
     const diff = Math.round((d - today) / 86400000);
     if (diff === 0) return 'Today';
     if (diff === 1) return 'Tomorrow';
-    if (diff < 0)  return Math.abs(diff) + 'd ago';
+    if (diff < 0)  return Math.abs(diff) + 'd overdue';
     return 'in ' + diff + 'd';
   }
 
-  const dueDateDisplay  = dueDate  ? DB.fmtDate(dueDate.toISOString().slice(0,10))  + ' (' + daysLabel(dueDate)  + ')' : (c.dueDate ? DB.fmtDate(c.dueDate) : '—');
-  const billDateDisplay = billDate ? DB.fmtDate(billDate.toISOString().slice(0,10)) + ' (' + daysLabel(billDate) + ')' : '—';
+  const dueDateDisplay  = dueDate  ? dueDate.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) + ' (' + daysLabel(dueDate)  + ')' : '—';
+  const billDateDisplay = billDate ? billDate.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) + ' (' + daysLabel(billDate) + ')' : '—';
+  const cardStripDue    = dueDate  ? dueDate.toLocaleDateString('en-IN',{day:'numeric',month:'short'})  : '—';
+  const cardStripBill   = billDate ? billDate.toLocaleDateString('en-IN',{day:'numeric',month:'short'}) : '—';
 
-  // Compact on-card display (shown in the card face strip)
-  const cardStripDue  = dueDate  ? dueDate.toLocaleDateString('en-IN',{day:'numeric',month:'short'})  : (c.dueDate ? DB.fmtDate(c.dueDate) : '—');
-  const cardStripBill = billDate ? billDate.toLocaleDateString('en-IN',{day:'numeric',month:'short'}) : '—';
+  // What to show on the card face — statement due if set, else total
+  const faceAmount      = statementDue > 0 ? statementDue : totalOutstanding;
+  const faceLabel       = statementDue > 0 ? 'Stmt Due' : 'Outstanding';
+
+  const hasCycleInfo = !!(c.billDay && c.dueDay);
 
   const detail = isOpen ? `
     <div style="padding:16px;border-top:1px solid var(--border)">
+
+      ${hasCycleInfo ? `
+      <!-- Statement breakdown — shown only when bill/due days are configured -->
+      <div style="background:var(--bg);border-radius:10px;padding:12px;margin-bottom:14px">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Current Cycle</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+          <div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:3px">📄 Stmt Due</div>
+            <div style="font-size:15px;font-weight:700;color:${statementDue > 0 ? 'var(--red)' : 'var(--green)'}">${DB.fmtINR(statementDue)}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">Pay by ${cardStripDue}</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:3px">🛍️ New Spend</div>
+            <div style="font-size:15px;font-weight:700;color:var(--orange)">${DB.fmtINR(newSpending)}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">Since ${cardStripBill}</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text3);margin-bottom:3px">💳 Total</div>
+            <div style="font-size:15px;font-weight:700;color:var(--text1)">${DB.fmtINR(totalOutstanding)}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">Outstanding</div>
+          </div>
+        </div>
+        ${statementDue === 0 && totalOutstanding > 0 ? `
+        <div style="margin-top:8px;padding:6px 10px;background:#D1FAE5;border-radius:6px;font-size:12px;color:var(--green);font-weight:600">
+          ✓ Last statement cleared — new cycle spending only
+        </div>` : ''}
+        ${overdue ? `
+        <div style="margin-top:8px;padding:6px 10px;background:#FEE4E2;border-radius:6px;font-size:12px;color:var(--red);font-weight:600">
+          ⚠ Payment overdue — Min due ${DB.fmtINR(c.minPayment||0)}
+        </div>` : ''}
+      </div>` : ''}
+
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
-        <div><div class="card-stat-label">Balance</div><div class="card-stat-value text-red">${DB.fmtFull(due)}</div></div>
+        <div><div class="card-stat-label">Outstanding</div><div class="card-stat-value text-red">${DB.fmtFull(totalOutstanding)}</div></div>
         <div><div class="card-stat-label">Limit</div><div class="card-stat-value">${DB.fmtFull(c.limit)}</div></div>
-        <div><div class="card-stat-label">Available</div><div class="card-stat-value text-green">${DB.fmtFull(c.limit - due)}</div></div>
+        <div><div class="card-stat-label">Available</div><div class="card-stat-value text-green">${DB.fmtFull(c.limit - totalOutstanding)}</div></div>
       </div>
-      <div style="margin-bottom:8px">
+      <div style="margin-bottom:12px">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text3);margin-bottom:4px">
           <span>Utilization</span><span style="color:${utilColor};font-weight:700">${util.toFixed(1)}%</span>
         </div>
@@ -797,22 +837,23 @@ function creditCardHTML(c) {
           </div>
           <div style="text-align:right">
             ${overdue ? '<div style="background:rgba(255,200,0,.3);padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;margin-bottom:6px">⚠ OVERDUE</div>' : ''}
-            <div style="font-size:11px;opacity:.7">Due Balance</div>
-            <div style="font-size:18px;font-weight:700">${DB.fmtINR(due)}</div>
+            <div style="font-size:11px;opacity:.7">${faceLabel}</div>
+            <div style="font-size:18px;font-weight:700">${DB.fmtINR(faceAmount)}</div>
+            ${hasCycleInfo && newSpending > 0 && statementDue > 0 ? `<div style="font-size:11px;opacity:.7;margin-top:2px">+${DB.fmtINR(newSpending)} new</div>` : ''}
           </div>
         </div>
         <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px;flex-wrap:wrap">
           <span><span style="opacity:.7">Limit </span><strong>${DB.fmtINR(c.limit)}</strong></span>
-          <span><span style="opacity:.7">Available </span><strong>${DB.fmtINR(c.limit - due)}</strong></span>
+          <span><span style="opacity:.7">Avail </span><strong>${DB.fmtINR(c.limit - totalOutstanding)}</strong></span>
           ${billDate ? `<span><span style="opacity:.7">Bill </span><strong>${cardStripBill}</strong></span>` : ''}
-          <span><span style="opacity:.7">Due </span><strong>${cardStripDue}</strong></span>
+          ${dueDate  ? `<span><span style="opacity:.7">Due </span><strong>${cardStripDue}</strong></span>` : ''}
         </div>
         <div style="height:4px;background:rgba(255,255,255,.25);border-radius:2px;overflow:hidden">
           <div style="height:100%;background:white;width:${util.toFixed(1)}%;border-radius:2px;opacity:.85"></div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
           <div style="font-size:11px;opacity:.6">${isOpen ? '▲ Less' : '▼ Details'}</div>
-          ${due > 0 ? `<button onclick="event.stopPropagation();openSettleCard('${c.id}')" style="background:rgba(255,255,255,0.25);border:1px solid rgba(255,255,255,0.5);color:white;padding:5px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">💳 Pay Now</button>` : ''}
+          ${faceAmount > 0 ? `<button onclick="event.stopPropagation();openSettleCard('${c.id}')" style="background:rgba(255,255,255,0.25);border:1px solid rgba(255,255,255,0.5);color:white;padding:5px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">💳 Pay Now</button>` : ''}
         </div>
       </div>
     </div>
@@ -1233,23 +1274,34 @@ function cardDueFromTransactions(card, txns, cats) {
 
 // Returns true if there is an unpaid statement balance from the last cycle.
 // Logic mirrors how banks determine overdue:
-//   1. Compute statement balance = all charges up to & including bill date, minus
-//      all payments up to & including bill date, plus opening balance.
-//   2. Subtract any payments made after the bill date (post-bill payments clear the dues).
-//   3. If the result is still > 0 and today is past the due date → overdue.
-function isCardOverdue(card, txns, cats, billDate, dueDate) {
-  if (!dueDate) return false;
+// Computes all cycle-aware balances for a card in one pass.
+// Returns:
+//   statementDue   — what was billed on the last statement, minus payments made after bill date
+//                    (this is what the bank shows as "Amount Due" / "Total Due")
+//   newSpending    — charges made strictly after the bill date (current cycle, not yet billed)
+//   totalOutstanding — statementDue + newSpending (full liability on the card right now)
+//   minPayment     — card's configured minimum payment
+//   overdue        — true if statementDue > 0 and today is past the due date
+//
+// If no billDay is set, statementDue = totalOutstanding = all-time balance, newSpending = 0.
+function cardCycleBalances(card, txns, cats, billDate, dueDate) {
   const today = new Date(); today.setHours(0,0,0,0);
-  if (dueDate >= today) return false; // due date not yet passed
 
   if (!billDate) {
-    // No bill day configured — fall back to simple dueBalance check
-    return cardDueFromTransactions(card, txns, cats) > 0;
+    // No billing cycle configured — treat everything as outstanding
+    const total = cardDueFromTransactions(card, txns, cats);
+    const pastDue = dueDate ? dueDate < today : false;
+    return {
+      statementDue:     total,
+      newSpending:      0,
+      totalOutstanding: total,
+      overdue:          pastDue && total > 0,
+    };
   }
 
   const billDateStr = billDate.toISOString().slice(0, 10);
 
-  // Statement balance: opening + charges on/before bill date − payments on/before bill date
+  // ── Statement balance (what was on the last bill) ─────────────────────
   const openingPaise = toPaise(card.balance || 0);
   const chargedToStatement = txns
     .filter(t => isCreditCardCharge(t) && t.creditCardId === card.id && t.date <= billDateStr)
@@ -1257,26 +1309,45 @@ function isCardOverdue(card, txns, cats, billDate, dueDate) {
   const paidToStatement = txns
     .filter(t => isCreditCardPaydown(t, cats) && t.creditCardId === card.id && t.date <= billDateStr)
     .reduce((s, t) => s + toPaise(t.amount), 0);
-  const statementBalancePaise = Math.max(0, openingPaise + chargedToStatement - paidToStatement);
+  const rawStatementPaise = Math.max(0, openingPaise + chargedToStatement - paidToStatement);
 
-  // Post-bill payments (after bill date, up to today) reduce the outstanding statement balance
+  // ── Post-bill payments clear the statement, excess carries forward ──────
+  // e.g. statement=100, paid=101 → statementDue=0, creditCarryover=1
   const paidAfterBill = txns
     .filter(t => isCreditCardPaydown(t, cats) && t.creditCardId === card.id && t.date > billDateStr)
     .reduce((s, t) => s + toPaise(t.amount), 0);
+  const statementDuePaise  = Math.max(0, rawStatementPaise - paidAfterBill);
+  const creditCarryover    = Math.max(0, paidAfterBill - rawStatementPaise); // overpaid amount
 
-  const outstanding = Math.max(0, statementBalancePaise - paidAfterBill);
-  return outstanding > 0;
+  // ── New spending since bill date (current unbilled cycle) ─────────────
+  const newSpendingPaise = txns
+    .filter(t => isCreditCardCharge(t) && t.creditCardId === card.id && t.date > billDateStr)
+    .reduce((s, t) => s + toPaise(t.amount), 0);
+
+  // Total = (stmt not yet paid) + (new spend not covered by credit carryover)
+  const netNewSpendingPaise = Math.max(0, newSpendingPaise - creditCarryover);
+
+  const statementDue     = fromPaise(statementDuePaise);
+  const newSpending      = fromPaise(netNewSpendingPaise);
+  const totalOutstanding = fromPaise(statementDuePaise + netNewSpendingPaise);
+  const overdue          = dueDate ? (dueDate < today && statementDuePaise > 0) : false;
+
+  return { statementDue, newSpending, totalOutstanding, overdue };
 }
 
 function cardsWithDue(cards, txns, cats) {
   return cards.map(c => {
     const { billDate, dueDate } = cardCurrentCycleDates(c);
+    const bal = cardCycleBalances(c, txns, cats, billDate, dueDate);
     return {
       ...c,
-      dueBalance: cardDueFromTransactions(c, txns, cats),
-      _billDate: billDate,
-      _dueDate: dueDate,
-      _overdue: isCardOverdue(c, txns, cats, billDate, dueDate),
+      // Keep dueBalance as total outstanding (used for utilization, available credit etc.)
+      dueBalance:       bal.totalOutstanding,
+      _statementDue:    bal.statementDue,
+      _newSpending:     bal.newSpending,
+      _billDate:        billDate,
+      _dueDate:         dueDate,
+      _overdue:         bal.overdue,
     };
   });
 }
