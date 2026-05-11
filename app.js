@@ -486,7 +486,16 @@ function renderLoans() {
   const completedLoans = loans.filter(l => getLoanPaidEmiNumbers(l, txns).length >= l.months);
 
   const totalPrincipal = activeLoans.reduce((s,l)=>s+l.principal,0);
-  const totalEMI       = activeLoans.reduce((s,l)=>s+DB.calcEMI(l.principal,l.rate,l.months),0);
+  const totalEMI = activeLoans.reduce((s, l) => {
+    const emi     = DB.calcEMI(l.principal, l.rate, l.months);
+    const gstRate = l.gst || 0;
+    if (!gstRate) return s + emi;
+    const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
+    const paid     = getLoanPaidEmiNumbers(l, txns);
+    const nextEMI  = schedule.find(e => !paid.includes(e.n));
+    const gst      = nextEMI ? (nextEMI.interest * gstRate / 100) : 0;
+    return s + emi + gst;
+  }, 0);
 
   const completedSection = completedLoans.length ? `
   <div style="margin-top:24px">
@@ -574,7 +583,7 @@ function loanCardHTML(l, txns) {
     </div>
     <div class="loan-progress"><div class="loan-fill" style="width:${pct}%"></div></div>
     <div class="loan-stats">
-      <div class="loan-stat"><div class="loan-stat-label">EMI</div><div class="loan-stat-value text-blue">${DB.fmtINR(emi)}</div></div>
+      <div class="loan-stat"><div class="loan-stat-label">Monthly EMI</div><div class="loan-stat-value text-blue">${DB.fmtINR(nextEMITotal || emi)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Remaining</div><div class="loan-stat-value text-red">${DB.fmtINR(remaining)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Interest Paid</div><div class="loan-stat-value">${DB.fmtINR(paidInterest)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Total Interest</div><div class="loan-stat-value text-orange">${DB.fmtINR(totalInterest)}</div></div>
@@ -1837,8 +1846,13 @@ function markEMIPaid(loanId, n) {
     showToast('This EMI is already recorded', 'error');
     return;
   }
-  const emi = DB.calcEMI(loan.principal, loan.rate, loan.months);
-  txns.unshift({ id:DB.uuid(), type:'expense', amount:emi, categoryId:DB.getCategories().find(c=>c.id==='c17'||c.name==='Loan EMI')?.id||'c17', description:`EMI - ${loan.name}`, date:DB.today(), payment:'net-banking', loanId, emiNo:n, txnKind:'loan-emi', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
+  const emi      = DB.calcEMI(loan.principal, loan.rate, loan.months);
+  const gstRate  = loan.gst || 0;
+  const schedule = DB.amortSchedule(loan.principal, loan.rate, loan.months, loan.startDate);
+  const entry    = schedule.find(e => e.n === n);
+  const gst      = (gstRate && entry) ? (entry.interest * gstRate / 100) : 0;
+  const total    = emi + gst;
+  txns.unshift({ id:DB.uuid(), type:'expense', amount:total, categoryId:DB.getCategories().find(c=>c.id==='c17'||c.name==='Loan EMI')?.id||'c17', description:`EMI - ${loan.name}`, date:DB.today(), payment:'net-banking', loanId, emiNo:n, txnKind:'loan-emi', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
   DB.saveTransactions(txns);
   renderTab('loans');
   showToast('EMI marked as paid ✓', 'success');
