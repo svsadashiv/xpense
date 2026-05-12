@@ -44,10 +44,14 @@ const PIN_LOCKOUT_MS   = 30000; // 30 seconds
 let _autoLockTimer   = null;
 
 function _resetAutoLockTimer() {
+  // Always clear any existing timer first
   if (_autoLockTimer) { clearTimeout(_autoLockTimer); _autoLockTimer = null; }
+  // Only arm if: PIN is set AND a positive inactivity timer is configured
   if (!DB.hasPin()) return;
-  const mins = DB.getSettings().autoLockMinutes || 0;
-  if (!mins) return;
+  const mins = parseInt(DB.getSettings().autoLockMinutes, 10);
+  if (!mins || mins <= 0) return;
+  // Don't re-arm if the lock screen is already showing
+  if (document.getElementById('auth-screen')?.style.display === 'flex') return;
   _autoLockTimer = setTimeout(() => {
     if (document.getElementById('auth-screen').style.display !== 'flex') lockApp();
   }, mins * 60 * 1000);
