@@ -40,6 +40,34 @@ let pinLockedUntil = 0;
 const PIN_MAX_ATTEMPTS = 5;
 const PIN_LOCKOUT_MS   = 30000; // 30 seconds
 
+// ── Auto-lock ──────────────────────────────────────────────────────────
+let _autoLockTimer   = null;
+
+function _resetAutoLockTimer() {
+  if (_autoLockTimer) { clearTimeout(_autoLockTimer); _autoLockTimer = null; }
+  if (!DB.hasPin()) return;
+  const mins = DB.getSettings().autoLockMinutes || 0;
+  if (!mins) return;
+  _autoLockTimer = setTimeout(() => {
+    if (document.getElementById('auth-screen').style.display !== 'flex') lockApp();
+  }, mins * 60 * 1000);
+}
+
+function _initAutoLock() {
+  ['click','keydown','touchstart','mousemove','scroll'].forEach(ev =>
+    document.addEventListener(ev, _resetAutoLockTimer, { passive: true })
+  );
+  _resetAutoLockTimer();
+}
+
+function setAutoLock(mins) {
+  const s = DB.getSettings();
+  DB.saveSettings({ ...s, autoLockMinutes: mins || 0 });
+  _resetAutoLockTimer();
+  showToast(mins ? `Auto-lock set to ${mins} min` : 'Auto-lock disabled');
+  renderTab('settings');
+}
+
 function initAuth() {
   // Replace each button with a fresh clone to remove any existing listeners,
   // then attach new ones. This is safe to call multiple times (e.g. on each lock).
@@ -123,6 +151,7 @@ async function handlePinComplete() {
 
 function showApp() {
   document.getElementById('auth-screen').style.display = 'none';
+  _resetAutoLockTimer(); // restart inactivity timer on unlock
   document.getElementById('main-app').style.display = 'flex';
   renderTab(currentTab);
 }
@@ -171,6 +200,7 @@ function lockApp() {
     showToast('Set a PIN in Settings first to lock the app');
     return;
   }
+  if (_autoLockTimer) { clearTimeout(_autoLockTimer); _autoLockTimer = null; }
   pinBuffer = '';
   updatePinDots();
   document.getElementById('main-app').style.display = 'none';
@@ -1134,6 +1164,22 @@ function renderSettings() {
         ${DB.hasPin()?'<button class=\"btn btn-danger btn-sm\" onclick=\"removePin()\">Remove</button>':''}
       </div>
     </div>
+    ${DB.hasPin() ? `
+    <div class="settings-row">
+      <div>
+        <div class="settings-row-label">Auto-Lock</div>
+        <div class="settings-row-sub">Lock app after inactivity${s.autoLockMinutes ? ' · <strong style="color:var(--green)">On</strong>' : ' · Off'}</div>
+      </div>
+      <select class="form-input" style="width:auto;padding:6px 12px;font-size:13px" onchange="setAutoLock(+this.value)">
+        <option value="0"  ${!s.autoLockMinutes ? 'selected' : ''}>Off</option>
+        <option value="1"  ${s.autoLockMinutes===1  ? 'selected' : ''}>1 min</option>
+        <option value="2"  ${s.autoLockMinutes===2  ? 'selected' : ''}>2 min</option>
+        <option value="5"  ${s.autoLockMinutes===5  ? 'selected' : ''}>5 min</option>
+        <option value="10" ${s.autoLockMinutes===10 ? 'selected' : ''}>10 min</option>
+        <option value="15" ${s.autoLockMinutes===15 ? 'selected' : ''}>15 min</option>
+        <option value="30" ${s.autoLockMinutes===30 ? 'selected' : ''}>30 min</option>
+      </select>
+    </div>` : ''}
   </div>
   <div class="settings-section">
     <div class="settings-section-title">Data Management</div>
@@ -2417,6 +2463,7 @@ document.addEventListener('DOMContentLoaded', () => {
   backfillTransactionLinks();
   initNav();
   initModal();
+  _initAutoLock(); // wire inactivity listeners once
   if (DB.hasPin()) {
     // PIN exists — show auth screen and wire up numpad
     initAuth();
