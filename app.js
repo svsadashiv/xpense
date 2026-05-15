@@ -8,17 +8,19 @@ function setSettleAmt(v) {
 
 // ── State ─────────────────────────────────────────────────────────────
 let currentTab    = 'dashboard';
-let summaryPeriod = 'month';
-let txnFilter     = 'all';
-let txnSearch     = '';
-let txnYear       = new Date().getFullYear();
-let txnMonth      = new Date().getMonth() + 1;
-let txnPayment    = null;
-let budgetMonth   = new Date().getMonth() + 1;
-let budgetYear    = new Date().getFullYear();
-let expandedCards = new Set();
-let drillCat      = null;
-let charts        = {};
+let summaryPeriod   = 'month';
+let txnFilter       = 'all';
+let txnSearch       = '';
+let txnYear         = new Date().getFullYear();
+let txnMonth        = new Date().getMonth() + 1;
+let txnPayment      = null;
+let budgetMonth     = new Date().getMonth() + 1;
+let budgetYear      = new Date().getFullYear();
+let expandedCards   = new Set();
+let drillCat        = null;
+let charts          = {};
+let dashTrendMonths = 6;  // 6 or 12
+let sumTrendMonths  = 6;  // 6 or 12
 
 // ── XSS Sanitiser ─────────────────────────────────────────────────────
 // All user-supplied strings inserted into innerHTML must go through this.
@@ -231,6 +233,10 @@ function renderTab(tab) {
     case 'summary':      content.innerHTML = renderSummary();      afterSummary();      break;
     case 'settings':     content.innerHTML = renderSettings();     afterSettings();     break;
   }
+
+  // Always scroll back to top when switching tabs
+  content.scrollTop = 0;
+  window.scrollTo(0, 0);
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────
@@ -321,7 +327,13 @@ function renderDashboard() {
 
   <div class="chart-grid">
     <div class="card">
-      <div class="card-title">6-Month Trend</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="card-title" style="margin:0">Trend</div>
+        <div style="display:flex;gap:4px">
+          <button class="period-btn ${dashTrendMonths===6?'active':''}" id="dash-6m-btn" onclick="switchDashTrend(6)" style="padding:4px 10px;font-size:12px">6M</button>
+          <button class="period-btn ${dashTrendMonths===12?'active':''}" id="dash-1y-btn" onclick="switchDashTrend(12)" style="padding:4px 10px;font-size:12px">1Y</button>
+        </div>
+      </div>
       <div class="chart-wrap"><canvas id="trend-chart"></canvas></div>
     </div>
     <div class="card">
@@ -340,7 +352,7 @@ function renderDashboard() {
 }
 
 function afterDashboard() {
-  const data = DB.monthlyTotals(6);
+  const data = DB.monthlyTotals(dashTrendMonths);
   const ctx = document.getElementById('trend-chart');
   if (!ctx) return;
   charts.trend = new Chart(ctx, {
@@ -1038,6 +1050,9 @@ function renderSummary() {
 
   if (summaryPeriod === 'month') {
     txns = txns.filter(t => { const d=new Date(t.date); return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear(); });
+  } else if (summaryPeriod === 'lastmonth') {
+    const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    txns = txns.filter(t => { const d=new Date(t.date); return d.getMonth()===lm.getMonth()&&d.getFullYear()===lm.getFullYear(); });
   } else if (summaryPeriod === '3m') {
     const since = new Date(now); since.setMonth(since.getMonth()-3);
     txns = txns.filter(t => new Date(t.date) >= since);
@@ -1071,7 +1086,7 @@ function renderSummary() {
     <div><div class="page-title">Summary</div></div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <div class="period-selector">
-        ${[['month','This Month'],['3m','3 Months'],['6m','6 Months'],['year','This Year'],['all','All Time']].map(([v,l])=>`
+        ${[['month','This Month'],['lastmonth','Last Month'],['3m','3 Months'],['6m','6 Months'],['year','This Year'],['all','All Time']].map(([v,l])=>`
         <button class="period-btn ${summaryPeriod===v?'active':''}" onclick="summaryPeriod='${v}';renderTab('summary')">${l}</button>`).join('')}
       </div>
       <button class="btn btn-secondary btn-sm" onclick="DB.exportPDF(summaryPeriod)">📄 Export PDF</button>
@@ -1091,7 +1106,11 @@ function renderSummary() {
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div class="card-title" style="margin:0">Trend</div>
-        <div style="display:flex;gap:4px">
+        <div style="display:flex;gap:4px;align-items:center">
+          <div style="display:flex;gap:4px;margin-right:6px;padding-right:6px;border-right:1px solid var(--border)">
+            <button class="period-btn" id="sum-6m-btn" onclick="switchSumTrend(6)" style="padding:4px 10px;font-size:12px">6M</button>
+            <button class="period-btn" id="sum-1y-btn" onclick="switchSumTrend(12)" style="padding:4px 10px;font-size:12px">1Y</button>
+          </div>
           <button class="period-btn active" id="chart-bar-btn" onclick="switchSumChart('bar')" style="padding:4px 10px;font-size:12px">Bar</button>
           <button class="period-btn" id="chart-line-btn" onclick="switchSumChart('line')" style="padding:4px 10px;font-size:12px">Line</button>
         </div>
@@ -1108,7 +1127,7 @@ function renderSummary() {
     <div class="card-title">Category Breakdown</div>
     ${catData.length === 0 ? '<p class="text-muted" style="font-size:14px;padding:12px 0">No outflow data</p>' :
       catData.map(({cat,total}) => `
-      <div class="cat-drill ${drillCat===cat.id?'open':''}" onclick="toggleDrill('${cat.id}')">
+      <div class="cat-drill ${drillCat===cat.id?'open':''}" data-id="${cat.id}" onclick="toggleDrill('${cat.id}')">
         <div class="cat-drill-header">
           <div class="cat-drill-icon" style="background:${cat.color}22">${cat.icon}</div>
           <div class="cat-drill-name">${cat.name}</div>
@@ -1116,8 +1135,29 @@ function renderSummary() {
           <span style="color:var(--text3)">${drillCat===cat.id?'▲':'▼'}</span>
         </div>
         <div class="cat-drill-body">
-          ${txns.filter(t=>t.categoryId===cat.id&&t.type==='expense').sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5).map(t=>`
-          <div class="cat-drill-txn"><span>${t.description||'No description'}</span><span style="font-weight:600;color:var(--red)">${DB.fmtINR(t.amount)}</span></div>`).join('')}
+          ${(() => {
+            const isLentCat     = cat.type === 'lent';
+            const isTransferCat = cat.type === 'transfer';
+            let rows = [];
+            if (isLentCat) {
+              // Show individual lent transactions, with recoveries shown as offsets
+              const lentTxns = txns.filter(t => t.type === 'lent').sort((a,b) => b.date.localeCompare(a.date)).slice(0, 10);
+              const recoveries = txns.filter(t => t.type === 'income' && t.lentTo);
+              rows = lentTxns.map(t => {
+                const recovered = recoveries.filter(r => r.lentTo === t.lentTo).reduce((s,r) => s+r.amount, 0);
+                const net = Math.max(0, t.amount - recovered);
+                const tag = net < t.amount ? ` <span style="color:var(--green);font-size:11px">(${DB.fmtINR(t.amount - net)} back)</span>` : '';
+                return `<div class="cat-drill-txn"><span>${t.lentTo || t.description || 'No description'}${tag}</span><span style="font-weight:600;color:var(--orange)">${DB.fmtINR(t.amount)}</span></div>`;
+              });
+            } else if (isTransferCat) {
+              const transferTxns = txns.filter(t => t.categoryId === cat.id && t.type === 'transfer').sort((a,b) => b.date.localeCompare(a.date)).slice(0, 5);
+              rows = transferTxns.map(t => `<div class="cat-drill-txn"><span>${t.description || (t.transferTo ? 'To: '+t.transferTo : 'Transfer')}</span><span style="font-weight:600;color:var(--blue)">${DB.fmtINR(t.amount)}</span></div>`);
+            } else {
+              const expTxns = txns.filter(t => t.categoryId === cat.id && t.type === 'expense').sort((a,b) => b.date.localeCompare(a.date)).slice(0, 5);
+              rows = expTxns.map(t => `<div class="cat-drill-txn"><span>${t.description || 'No description'}</span><span style="font-weight:600;color:var(--red)">${DB.fmtINR(t.amount)}</span></div>`);
+            }
+            return rows.length ? rows.join('') : '<div class="cat-drill-txn" style="color:var(--text3)">No transactions</div>';
+          })()}
         </div>
       </div>`).join('')}
   </div>`;
@@ -1128,7 +1168,7 @@ function kpiHTML(label, value, icon, bg, color) {
 }
 
 function afterSummary() {
-  const data = DB.monthlyTotals(6);
+  const data = DB.monthlyTotals(sumTrendMonths);
   const ctx1 = document.getElementById('sum-trend');
   const ctx2 = document.getElementById('sum-pie');
   if (ctx1) {
@@ -1140,6 +1180,9 @@ function afterSummary() {
       ]},
       options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'bottom'}}, scales:{x:{grid:{display:false}},y:{ticks:{callback:v=>DB.fmtINR(v)}}} }
     });
+    // Sync 6M/1Y button active states after render
+    document.getElementById('sum-6m-btn')?.classList.toggle('active', sumTrendMonths === 6);
+    document.getElementById('sum-1y-btn')?.classList.toggle('active', sumTrendMonths === 12);
   }
   const now = new Date();
   let txns = DB.getTransactions();
@@ -2350,14 +2393,45 @@ function clearAllData() {
   renderTab(currentTab);
 }
 
+function switchDashTrend(months) {
+  dashTrendMonths = months;
+  document.getElementById('dash-6m-btn')?.classList.toggle('active', months === 6);
+  document.getElementById('dash-1y-btn')?.classList.toggle('active', months === 12);
+  if (charts.trend) charts.trend.destroy();
+  const data = DB.monthlyTotals(dashTrendMonths);
+  const ctx  = document.getElementById('trend-chart');
+  if (!ctx) return;
+  charts.trend = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map(d => d.label),
+      datasets: [
+        { label:'Income',  data:data.map(d=>d.income),  backgroundColor:'rgba(18,183,106,.8)', borderRadius:5 },
+        { label:'Expense', data:data.map(d=>d.expense), backgroundColor:'rgba(240,68,56,.8)',  borderRadius:5 },
+      ]
+    },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:11}}}}, scales:{x:{grid:{display:false}},y:{grid:{color:'#f0f0f0'},ticks:{callback:v=>DB.fmtINR(v)}}} }
+  });
+}
+
+function switchSumTrend(months) {
+  sumTrendMonths = months;
+  const isLine = document.getElementById('chart-line-btn')?.classList.contains('active');
+  switchSumChart(isLine ? 'line' : 'bar');
+}
+
 function switchSumChart(type) {
   if (charts.sumTrend) charts.sumTrend.destroy();
-  const data = DB.monthlyTotals(6);
+  const data = DB.monthlyTotals(sumTrendMonths);
   const ctx = document.getElementById('sum-trend');
   if (!ctx) return;
   const isLine = type === 'line';
+  // Sync bar/line buttons
   document.getElementById('chart-bar-btn')?.classList.toggle('active', !isLine);
   document.getElementById('chart-line-btn')?.classList.toggle('active', isLine);
+  // Sync 6M/1Y buttons
+  document.getElementById('sum-6m-btn')?.classList.toggle('active', sumTrendMonths === 6);
+  document.getElementById('sum-1y-btn')?.classList.toggle('active', sumTrendMonths === 12);
   charts.sumTrend = new Chart(ctx, {
     type: isLine ? 'line' : 'bar',
     data: { labels:data.map(d=>d.label), datasets:[
@@ -2369,8 +2443,12 @@ function switchSumChart(type) {
 }
 
 function toggleDrill(id) {
-  drillCat = drillCat === id ? null : id;
-  renderTab('summary');
+  const el = document.querySelector('.cat-drill[data-id="' + id + '"]');
+  if (!el) return;
+  const isOpen = el.classList.contains('open');
+  document.querySelectorAll('.cat-drill.open').forEach(d => d.classList.remove('open'));
+  if (!isOpen) el.classList.add('open');
+  drillCat = isOpen ? null : id;
 }
 
 // ── Toast ──────────────────────────────────────────────────────────────
