@@ -629,6 +629,7 @@ function loanCardHTML(l, txns) {
     </div>
     <div class="loan-progress"><div class="loan-fill" style="width:${pct}%"></div></div>
     <div class="loan-stats">
+      <div class="loan-stat"><div class="loan-stat-label">Loan Amount</div><div class="loan-stat-value">${DB.fmtINR(l.principal)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Monthly EMI</div><div class="loan-stat-value text-blue">${DB.fmtINR(nextEMITotal || emi)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Remaining</div><div class="loan-stat-value text-red">${DB.fmtINR(remaining)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Interest Paid</div><div class="loan-stat-value">${DB.fmtINR(paidInterest)}</div></div>
