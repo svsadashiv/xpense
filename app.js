@@ -439,7 +439,7 @@ function renderTransactions() {
 
     '<div class="filter-bar">'+typeChips+'</div>' +
 
-    '<div id="txn-summary-badges" style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">' +
+    '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">' +
       '<div class="badge badge-green" style="padding:6px 12px">↓ Income '+DB.fmtINR(income)+'</div>' +
       '<div class="badge badge-red" style="padding:6px 12px">↑ Outflow '+DB.fmtINR(expense+transfer+lent)+'</div>' +
       '<div class="badge badge-blue" style="padding:6px 12px">Net '+DB.fmtINR(net)+'</div>' +
@@ -523,61 +523,6 @@ function formatDateHeader(iso) {
   return d.toLocaleDateString('en-IN', {weekday:'long', day:'2-digit', month:'short'});
 }
 
-// Surgically refreshes the summary badges + transaction rows without
-// re-rendering the full page (preserves scroll position and filter controls).
-function refreshTransactionsUI() {
-  const rowsContainer = document.getElementById('txn-rows-container');
-  const summaryBadges = document.getElementById('txn-summary-badges');
-  const subtitleEl    = document.querySelector('.page-subtitle');
-  if (!rowsContainer || !summaryBadges) { renderTab('transactions'); return; }
-
-  const cats = DB.getCategories();
-  let txns   = DB.getTransactions();
-
-  if (txnFilter !== 'all') txns = txns.filter(t => t.type === txnFilter);
-  if (txnSearch) {
-    const s = txnSearch.toLowerCase();
-    txns = txns.filter(t => (t.description||'').toLowerCase().includes(s) || (t.lentTo||'').toLowerCase().includes(s) || (t.transferTo||'').toLowerCase().includes(s) || (cats.find(c => c.id === t.categoryId)?.name||'').toLowerCase().includes(s));
-  }
-  if (txnYear)    txns = txns.filter(t => new Date(t.date).getFullYear() === txnYear);
-  if (txnMonth)   txns = txns.filter(t => new Date(t.date).getMonth() + 1 === txnMonth);
-  if (txnPayment) txns = txns.filter(t => t.payment === txnPayment);
-  txns.sort((a,b) => b.date.localeCompare(a.date));
-
-  const income        = txns.filter(t => t.type==='income' && !t.lentTo).reduce((s,t)=>s+t.amount,0);
-  const expense       = txns.filter(t => t.type==='expense').reduce((s,t)=>s+t.amount,0);
-  const transfer      = txns.filter(t => t.type==='transfer').reduce((s,t)=>s+t.amount,0);
-  const lentGiven     = txns.filter(t => t.type==='lent').reduce((s,t)=>s+t.amount,0);
-  const lentRecovered = txns.filter(t => t.type==='income' && t.lentTo).reduce((s,t)=>s+t.amount,0);
-  const lent          = Math.max(0, lentGiven - lentRecovered);
-  const net           = income - expense - transfer - lent;
-  const allTxns       = DB.getTransactions();
-  const allTimePending = Math.max(0,
-    allTxns.filter(t=>t.type==='lent').reduce((s,t)=>s+t.amount,0) -
-    allTxns.filter(t=>t.type==='income'&&t.lentTo).reduce((s,t)=>s+t.amount,0));
-
-  const lentBadge    = lent > 0 ? '<div class="badge badge-orange" style="padding:6px 12px">🤝 Lent (period) '+DB.fmtINR(lent)+'</div>' : '';
-  const pendingBadge = allTimePending > 0 ? '<div class="badge badge-orange" style="padding:6px 12px;background:#FEF3C7;color:#B45309">⏳ Pending (all time) '+DB.fmtINR(allTimePending)+'</div>' : '';
-
-  summaryBadges.innerHTML =
-    '<div class="badge badge-green" style="padding:6px 12px">↓ Income '+DB.fmtINR(income)+'</div>' +
-    '<div class="badge badge-red" style="padding:6px 12px">↑ Outflow '+DB.fmtINR(expense+transfer+lent)+'</div>' +
-    '<div class="badge badge-blue" style="padding:6px 12px">Net '+DB.fmtINR(net)+'</div>' +
-    lentBadge + pendingBadge;
-
-  if (subtitleEl) subtitleEl.textContent = txns.length + ' transactions';
-
-  const groups = {};
-  txns.forEach(t => (groups[t.date] = groups[t.date] || []).push(t));
-  const sortedDates = Object.keys(groups).sort((a,b) => b.localeCompare(a));
-  rowsContainer.innerHTML = sortedDates.length === 0
-    ? '<div class="empty-state"><div class="empty-icon">🔍</div><p>No transactions found</p></div>'
-    : sortedDates.map(date =>
-        '<div class="section-date">'+formatDateHeader(date)+'</div>' +
-        '<div class="txn-list">'+groups[date].map(t => txnRowHTML(t, cats, true)).join('')+'</div>'
-      ).join('');
-}
-
 // ── Loans ──────────────────────────────────────────────────────────────
 function renderLoans() {
   const loans = DB.getLoans();
@@ -597,6 +542,69 @@ function renderLoans() {
     const gst      = nextEMI ? (nextEMI.interest * gstRate / 100) : 0;
     return s + emi + gst;
   }, 0);
+
+  // ── This month's EMI summary ───────────────────────────────────────────
+  const now = new Date();
+  const thisMonth = now.getMonth() + 1;
+  const thisYear  = now.getFullYear();
+
+  let paidThisMonth = 0, pendingThisMonth = 0;
+  let paidCount = 0, pendingCount = 0;
+  const pendingLoans = [];
+
+  activeLoans.forEach(l => {
+    const emi      = DB.calcEMI(l.principal, l.rate, l.months);
+    const gstRate  = l.gst || 0;
+    const paidNums = getLoanPaidEmiNumbers(l, txns);
+    const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
+
+    // Find the EMI whose due date falls in the current month
+    const thisMonthEMI = schedule.find(e => {
+      const d = new Date(e.date);
+      return d.getMonth() + 1 === thisMonth && d.getFullYear() === thisYear;
+    });
+
+    if (!thisMonthEMI) return; // no EMI due this month for this loan
+
+    const gst      = gstRate > 0 ? (thisMonthEMI.interest * gstRate / 100) : 0;
+    const emiTotal = emi + gst;
+
+    if (paidNums.includes(thisMonthEMI.n)) {
+      paidThisMonth += emiTotal;
+      paidCount++;
+    } else {
+      pendingThisMonth += emiTotal;
+      pendingCount++;
+      pendingLoans.push({ name: l.name, amount: emiTotal, date: thisMonthEMI.date });
+    }
+  });
+
+  const monthLabel = now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const hasActivity = paidCount > 0 || pendingCount > 0;
+
+  const monthlySummary = hasActivity ? `
+  <div class="card" style="margin-bottom:20px;border-left:4px solid var(--blue)">
+    <div style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px">📅 ${monthLabel} — EMI Summary</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:${pendingCount > 0 ? '14px' : '0'}">
+      <div style="background:#D1FAE5;border-radius:10px;padding:12px">
+        <div style="font-size:12px;color:#065F46;margin-bottom:4px">✅ Paid (${paidCount} EMI${paidCount !== 1 ? 's' : ''})</div>
+        <div style="font-size:20px;font-weight:700;color:#065F46">${DB.fmtINR(paidThisMonth)}</div>
+      </div>
+      <div style="background:${pendingCount > 0 ? '#FEE4E2' : '#F3F4F6'};border-radius:10px;padding:12px">
+        <div style="font-size:12px;color:${pendingCount > 0 ? 'var(--red)' : 'var(--text3)'};margin-bottom:4px">${pendingCount > 0 ? '⏳' : '🎉'} Pending (${pendingCount} EMI${pendingCount !== 1 ? 's' : ''})</div>
+        <div style="font-size:20px;font-weight:700;color:${pendingCount > 0 ? 'var(--red)' : 'var(--text3)'}">${DB.fmtINR(pendingThisMonth)}</div>
+      </div>
+    </div>
+    ${pendingCount > 0 ? `
+    <div style="border-top:1px solid var(--border);padding-top:10px">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;font-weight:600">Due this month:</div>
+      ${pendingLoans.map(p => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">
+        <span style="color:var(--text1);font-weight:500">${escapeHTML(p.name)}</span>
+        <span style="color:var(--red);font-weight:700">${DB.fmtINR(p.amount)}</span>
+      </div>`).join('')}
+    </div>` : ''}
+  </div>` : '';
 
   const completedSection = completedLoans.length ? `
   <div style="margin-top:24px">
@@ -626,6 +634,7 @@ function renderLoans() {
     <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Principal</div><div class="kpi-value">${DB.fmtINR(totalPrincipal)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
   </div>` : ''}
+  ${buildLoanMonthlySummary(activeLoans, txns)}
   </div>
 
   <div id="loans-active-wrap">
@@ -688,7 +697,6 @@ function loanCardHTML(l, txns) {
     </div>
     <div class="loan-progress"><div class="loan-fill" style="width:${pct}%"></div></div>
     <div class="loan-stats">
-      <div class="loan-stat"><div class="loan-stat-label">Loan Amount</div><div class="loan-stat-value">${DB.fmtINR(l.principal)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Monthly EMI</div><div class="loan-stat-value text-blue">${DB.fmtINR(nextEMITotal || emi)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Remaining</div><div class="loan-stat-value text-red">${DB.fmtINR(remaining)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Interest Paid</div><div class="loan-stat-value">${DB.fmtINR(paidInterest)}</div></div>
@@ -731,8 +739,65 @@ function loanCardHTML(l, txns) {
 
 function afterLoans() {}
 
-// Surgically refreshes the loans KPI strip + active loan cards without
-// re-rendering the full page (preserves scroll position).
+// Builds the monthly EMI summary card HTML (shared by renderLoans & refreshLoansUI)
+function buildLoanMonthlySummary(activeLoans, txns) {
+  const now = new Date();
+  const thisMonth = now.getMonth() + 1;
+  const thisYear  = now.getFullYear();
+
+  let paidThisMonth = 0, pendingThisMonth = 0;
+  let paidCount = 0, pendingCount = 0;
+  const pendingLoans = [];
+
+  activeLoans.forEach(l => {
+    const emi      = DB.calcEMI(l.principal, l.rate, l.months);
+    const gstRate  = l.gst || 0;
+    const paidNums = getLoanPaidEmiNumbers(l, txns);
+    const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
+    const thisMonthEMI = schedule.find(e => {
+      const d = new Date(e.date);
+      return d.getMonth() + 1 === thisMonth && d.getFullYear() === thisYear;
+    });
+    if (!thisMonthEMI) return;
+    const gst      = gstRate > 0 ? (thisMonthEMI.interest * gstRate / 100) : 0;
+    const emiTotal = emi + gst;
+    if (paidNums.includes(thisMonthEMI.n)) {
+      paidThisMonth += emiTotal; paidCount++;
+    } else {
+      pendingThisMonth += emiTotal; pendingCount++;
+      pendingLoans.push({ name: l.name, amount: emiTotal });
+    }
+  });
+
+  if (paidCount === 0 && pendingCount === 0) return '';
+  const monthLabel = now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  return `
+  <div class="card" style="margin-bottom:20px;border-left:4px solid var(--blue)">
+    <div style="font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px">📅 ${monthLabel} — EMI Summary</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:${pendingCount > 0 ? '14px' : '0'}">
+      <div style="background:#D1FAE5;border-radius:10px;padding:12px">
+        <div style="font-size:12px;color:#065F46;margin-bottom:4px">✅ Paid (${paidCount} EMI${paidCount !== 1 ? 's' : ''})</div>
+        <div style="font-size:20px;font-weight:700;color:#065F46">${DB.fmtINR(paidThisMonth)}</div>
+      </div>
+      <div style="background:${pendingCount > 0 ? '#FEE4E2' : '#F3F4F6'};border-radius:10px;padding:12px">
+        <div style="font-size:12px;color:${pendingCount > 0 ? 'var(--red)' : 'var(--text3)'};margin-bottom:4px">${pendingCount > 0 ? '⏳' : '🎉'} Pending (${pendingCount} EMI${pendingCount !== 1 ? 's' : ''})</div>
+        <div style="font-size:20px;font-weight:700;color:${pendingCount > 0 ? 'var(--red)' : 'var(--text3)'}">${DB.fmtINR(pendingThisMonth)}</div>
+      </div>
+    </div>
+    ${pendingCount > 0 ? `
+    <div style="border-top:1px solid var(--border);padding-top:10px">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;font-weight:600">Due this month:</div>
+      ${pendingLoans.map(p => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">
+        <span style="color:var(--text1);font-weight:500">${escapeHTML(p.name)}</span>
+        <span style="color:var(--red);font-weight:700">${DB.fmtINR(p.amount)}</span>
+      </div>`).join('')}
+    </div>` : ''}
+  </div>`;
+}
+
+// Surgically refreshes the loans KPI strip + monthly summary + active loan cards
+// without re-rendering the full page (preserves scroll position).
 function refreshLoansUI() {
   const kpiWrap    = document.getElementById('loans-kpi-wrap');
   const activeWrap = document.getElementById('loans-active-wrap');
@@ -755,11 +820,11 @@ function refreshLoansUI() {
     return s + emi + gst;
   }, 0);
 
-  kpiWrap.innerHTML = activeLoans.length ? `
+  kpiWrap.innerHTML = (activeLoans.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
     <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Principal</div><div class="kpi-value">${DB.fmtINR(totalPrincipal)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
-  </div>` : '';
+  </div>` : '') + buildLoanMonthlySummary(activeLoans, txns);
 
   activeWrap.innerHTML = activeLoans.length === 0 && completedLoans.length === 0
     ? `<div class="empty-state"><div class="empty-icon">🏦</div><p>No active loans. Add your first loan to track EMIs.</p></div>`
@@ -767,7 +832,6 @@ function refreshLoansUI() {
       ? `<div class="empty-state"><div class="empty-icon">🎉</div><p>All loans repaid!</p></div>`
       : activeLoans.map(l => loanCardHTML(l, txns)).join('');
 
-  // Update completed section count label if it exists
   const completedBtn = document.getElementById('completed-loans-btn');
   if (completedBtn) {
     completedBtn.querySelector('span:first-child').textContent = `✅ Completed Loans (${completedLoans.length})`;
@@ -775,6 +839,8 @@ function refreshLoansUI() {
     if (completedList) completedList.innerHTML = completedLoans.map(l => loanCardHTML(l, txns)).join('');
   }
 }
+
+// ── Card date helpers ──────────────────────────────────────────────────
 // Returns the clamped date for a given day in a given year+month (0-indexed).
 // If the day exceeds the month's last day (e.g. 31 in April), it uses the last day.
 function _clampedDate(y, m, day) {
@@ -867,7 +933,6 @@ function renderCards() {
     <div><div class="page-title">Credit Cards</div></div>
     <button class="btn btn-primary" onclick="openAddCard()">+ Add Card</button>
   </div>
-  <div id="cards-kpi-wrap">
   ${cards.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
     <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">💳</div><div class="kpi-label">Total Cards</div><div class="kpi-value">${cards.length}</div></div>
@@ -877,11 +942,8 @@ function renderCards() {
     <div class="kpi-card"><div class="kpi-icon" style="background:#E8F5E9">🏦</div><div class="kpi-label">Total Limit</div><div class="kpi-value text-green">${DB.fmtINR(totalLimit)}</div></div>
     ${overdueCards.length ? `<div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">⚠️</div><div class="kpi-label">Overdue Cards</div><div class="kpi-value text-orange">${overdueCards.length}</div></div>` : ''}
   </div>` : ''}
-  </div>
-  <div id="cards-list-wrap">
   ${cards.length === 0 ? `<div class="empty-state"><div class="empty-icon">💳</div><p>No credit cards added yet.</p></div>` :
-    cards.map(c => creditCardHTML(c)).join('')}
-  </div>`;
+    cards.map(c => creditCardHTML(c)).join('')}`;
 }
 
 function creditCardHTML(c) {
@@ -919,8 +981,8 @@ function creditCardHTML(c) {
 
   const hasCycleInfo = !!(c.billDay && c.dueDay);
 
-  const detail = `
-    <div id="card-detail-${c.id}" style="display:${isOpen ? 'block' : 'none'};padding:16px;border-top:1px solid var(--border)">
+  const detail = isOpen ? `
+    <div style="padding:16px;border-top:1px solid var(--border)">
 
       ${hasCycleInfo ? `
       <!-- Statement breakdown — shown only when bill/due days are configured -->
@@ -984,7 +1046,7 @@ function creditCardHTML(c) {
         <button class="btn btn-secondary" onclick="openEditCard('${c.id}')">✏️</button>
         <button class="btn btn-danger btn-sm" onclick="deleteCard('${c.id}')">🗑️</button>
       </div>
-    </div>`;
+    </div>` : '';
 
   return `
   <div style="margin-bottom:16px;border-radius:14px;overflow:hidden;box-shadow:var(--shadow)">
@@ -1014,7 +1076,7 @@ function creditCardHTML(c) {
           <div style="height:100%;background:white;width:${util.toFixed(1)}%;border-radius:2px;opacity:.85"></div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
-          <div id="card-chevron-${c.id}" style="font-size:11px;opacity:.6">${isOpen ? '▲ Less' : '▼ Details'}</div>
+          <div style="font-size:11px;opacity:.6">${isOpen ? '▲ Less' : '▼ Details'}</div>
           ${faceAmount > 0 ? `<button onclick="event.stopPropagation();openSettleCard('${c.id}')" style="background:rgba(255,255,255,0.25);border:1px solid rgba(255,255,255,0.5);color:white;padding:5px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">💳 Pay Now</button>` : ''}
         </div>
       </div>
@@ -1031,35 +1093,6 @@ function afterCards() {
   if (modal) {
     modal.addEventListener('input', _updateCardCyclePreview);
   }
-}
-
-// Surgically refreshes the cards KPI strip + cards list without re-rendering the full page.
-function refreshCardsUI() {
-  const kpiWrap  = document.getElementById('cards-kpi-wrap');
-  const listWrap = document.getElementById('cards-list-wrap');
-  if (!kpiWrap || !listWrap) { renderTab('cards'); return; }
-
-  const cats = DB.getCategories();
-  const cards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
-  const totalStatementDue = cards.reduce((s,c) => s + (c._statementDue||0), 0);
-  const totalOutstanding   = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
-  const totalLimit         = cards.reduce((s,c) => s + (c.limit||0), 0);
-  const overdueCards       = cards.filter(c => c._overdue);
-  const totalUtil          = totalLimit > 0 ? Math.min((totalOutstanding / totalLimit) * 100, 100) : 0;
-
-  kpiWrap.innerHTML = cards.length ? `
-  <div class="kpi-grid" style="margin-bottom:24px">
-    <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">💳</div><div class="kpi-label">Total Cards</div><div class="kpi-value">${cards.length}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">💸</div><div class="kpi-label">Stmt Due</div><div class="kpi-value text-red">${DB.fmtINR(totalStatementDue)}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#FFF7ED">🧾</div><div class="kpi-label">Total Outstanding</div><div class="kpi-value text-orange">${DB.fmtINR(totalOutstanding)}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">📊</div><div class="kpi-label">Avg Utilization</div><div class="kpi-value text-orange">${totalUtil.toFixed(1)}%</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#E8F5E9">🏦</div><div class="kpi-label">Total Limit</div><div class="kpi-value text-green">${DB.fmtINR(totalLimit)}</div></div>
-    ${overdueCards.length ? `<div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">⚠️</div><div class="kpi-label">Overdue Cards</div><div class="kpi-value text-orange">${overdueCards.length}</div></div>` : ''}
-  </div>` : '';
-
-  listWrap.innerHTML = cards.length === 0
-    ? `<div class="empty-state"><div class="empty-icon">💳</div><p>No credit cards added yet.</p></div>`
-    : cards.map(c => creditCardHTML(c)).join('');
 }
 
 function _updateCardCyclePreview() {
@@ -1099,9 +1132,8 @@ function renderBudget() {
     <button class="btn btn-secondary btn-sm" onclick="openReplicateBudget()">📋 Replicate Month</button>
   </div>
 
-  <div id="budget-summary-wrap">
   ${budgets.length ? `
-  <div class="card" style="margin-bottom:20px" id="budget-summary-card">
+  <div class="card" style="margin-bottom:20px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div><div style="font-size:13px;color:var(--text3)">Total Budget</div><div style="font-size:22px;font-weight:700">${DB.fmtFull(totalBudget)}</div></div>
       <div style="text-align:right">
@@ -1112,9 +1144,8 @@ function renderBudget() {
     <div class="util-bar" style="height:10px"><div class="util-fill" style="width:${Math.min(totalSpent/totalBudget*100,100).toFixed(1)}%;background:${totalSpent>totalBudget?'var(--red)':'var(--blue)'}"></div></div>
     <div style="font-size:12px;color:var(--text3);margin-top:6px">Spent ${DB.fmtINR(totalSpent)} of ${DB.fmtINR(totalBudget)}</div>
   </div>
-  <div id="budget-rows-list">${budgets.map(b => budgetRowHTML(b, cats)).join('')}</div>` :
-  `<div class="empty-state" id="budget-empty"><div class="empty-icon">📊</div><p>No budgets for this month.<br>Add one or replicate from a previous month.</p></div>`}
-  </div>
+  ${budgets.map(b => budgetRowHTML(b, cats)).join('')}` :
+  `<div class="empty-state"><div class="empty-icon">📊</div><p>No budgets for this month.<br>Add one or replicate from a previous month.</p></div>`}
   `;
 }
 
@@ -1170,34 +1201,6 @@ function goalCardHTML(g, currentSaved) {
 
 function afterBudget() {}
 
-// Surgically refreshes only the budget summary card + rows list,
-// without re-rendering the entire page (avoids scroll-to-top flash).
-function refreshBudgetUI() {
-  const wrap = document.getElementById('budget-summary-wrap');
-  if (!wrap) { renderTab('budget'); return; }
-  const budgets = DB.getBudgets().filter(b => b.month === budgetMonth && b.year === budgetYear);
-  const cats    = DB.getCategories();
-  const totalBudget = budgets.reduce((s,b)=>s+b.limit,0);
-  const totalSpent  = budgets.reduce((s,b)=>s+DB.spentInCategory(b.categoryId,b.month,b.year),0);
-  if (!budgets.length) {
-    wrap.innerHTML = `<div class="empty-state" id="budget-empty"><div class="empty-icon">📊</div><p>No budgets for this month.<br>Add one or replicate from a previous month.</p></div>`;
-    return;
-  }
-  wrap.innerHTML = `
-  <div class="card" style="margin-bottom:20px" id="budget-summary-card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <div><div style="font-size:13px;color:var(--text3)">Total Budget</div><div style="font-size:22px;font-weight:700">${DB.fmtFull(totalBudget)}</div></div>
-      <div style="text-align:right">
-        <div style="font-size:13px;color:var(--text3)">Remaining</div>
-        <div style="font-size:22px;font-weight:700;color:${totalSpent>totalBudget?'var(--red)':'var(--green)'}">${DB.fmtFull(totalBudget-totalSpent)}</div>
-      </div>
-    </div>
-    <div class="util-bar" style="height:10px"><div class="util-fill" style="width:${Math.min(totalSpent/totalBudget*100,100).toFixed(1)}%;background:${totalSpent>totalBudget?'var(--red)':'var(--blue)'}"></div></div>
-    <div style="font-size:12px;color:var(--text3);margin-top:6px">Spent ${DB.fmtINR(totalSpent)} of ${DB.fmtINR(totalBudget)}</div>
-  </div>
-  <div id="budget-rows-list">${budgets.map(b => budgetRowHTML(b, cats)).join('')}</div>`;
-}
-
 // ── Goals ──────────────────────────────────────────────────────────────
 function renderGoals() {
   const goals = DB.getGoals();
@@ -1206,18 +1209,7 @@ function renderGoals() {
   const body = goals.length === 0
     ? '<div class="empty-state"><div class="empty-icon">🎯</div><p>No savings goals yet.<br>Set a target and track your progress.</p></div>'
     : goals.map(g => goalCardHTML(g, getGoalCurrentFromTransactions(g, txns))).join('');
-  return header + '<div id="goals-list-wrap">' + body + '</div>';
-}
-
-// Surgically refreshes the goals list without re-rendering the full page.
-function refreshGoalsUI() {
-  const wrap = document.getElementById('goals-list-wrap');
-  if (!wrap) { renderTab('goals'); return; }
-  const goals = DB.getGoals();
-  const txns  = DB.getTransactions();
-  wrap.innerHTML = goals.length === 0
-    ? '<div class="empty-state"><div class="empty-icon">🎯</div><p>No savings goals yet.<br>Set a target and track your progress.</p></div>'
-    : goals.map(g => goalCardHTML(g, getGoalCurrentFromTransactions(g, txns))).join('');
+  return header + body;
 }
 
 // ── Summary ────────────────────────────────────────────────────────────
@@ -1732,13 +1724,13 @@ function openAddTransaction(editId = null) {
   const ccOpts = cards.length === 0
     ? '<p style="color:var(--orange);font-size:13px">No cards added yet.</p>'
     : '<select class="form-select" id="txn-card">' +
-        cards.map((c,i) => '<option value="'+c.id+'"'+(edit && edit.payment === 'credit-card' && edit.creditCardId===c.id ? ' selected' : (!edit && i===0 ? ' selected':''))+'>'+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+' (Avail: '+DB.fmtINR(c.limit-c.dueBalance)+')</option>').join('') +
+        cards.map((c,i) => '<option value="'+c.id+'"'+(edit && edit.payment === 'credit-card' && edit.creditCardId===c.id ? ' selected' : (!edit && i===0 ? ' selected':''))+'>'+c.name+' ('+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+') — Avail: '+DB.fmtINR(c.limit-c.dueBalance)+'</option>').join('') +
       '</select>';
   const paydownOpts = cards.length === 0
     ? '<p style="color:var(--orange);font-size:13px">No cards added yet.</p>'
     : '<select class="form-select" id="txn-paydown-card">' +
         '<option value="">— Not paying toward a card —</option>' +
-        cards.map(c => '<option value="'+c.id+'"'+(paydownSelected===c.id?' selected':'')+'>'+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+'</option>').join('') +
+        cards.map(c => '<option value="'+c.id+'"'+(paydownSelected===c.id?' selected':'')+'>'+c.name+' ('+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+')</option>').join('') +
       '</select>';
 
   const body =
@@ -1940,22 +1932,14 @@ function saveTxn() {
   }
   DB.saveTransactions(txns);
   closeModal();
-  if (currentTab === 'transactions') {
-    refreshTransactionsUI();
-  } else {
-    renderTab(currentTab);
-  }
+  renderTab(currentTab);
   showToast(id ? 'Transaction updated' : 'Transaction added', 'success');
 }
 
 function deleteTransaction(id) {
   if (!confirm('Delete this transaction?')) return;
   DB.saveTransactions(DB.getTransactions().filter(t => t.id !== id));
-  if (currentTab === 'transactions') {
-    refreshTransactionsUI();
-  } else {
-    renderTab(currentTab);
-  }
+  renderTab(currentTab);
   showToast('Deleted', 'error');
 }
 
@@ -2235,7 +2219,7 @@ function saveCard() {
   else cards.push(card);
   DB.saveCards(cards);
   closeModal();
-  refreshCardsUI();
+  renderTab('cards');
   showToast(id ? 'Card updated ✓' : 'Card added ✓', 'success');
 }
 
@@ -2308,31 +2292,20 @@ function settleCard(id) {
   });
   DB.saveTransactions(txns);
   closeModal();
-  refreshCardsUI();
+  renderTab('cards');
   showToast('Payment recorded for ' + cardLabel + ' ✓', 'success');
 }
 
 function deleteCard(id) {
   if (!confirm('Delete this card?')) return;
   DB.saveCards(DB.getCards().filter(c => c.id !== id));
-  refreshCardsUI();
+  renderTab('cards');
   showToast('Card deleted', 'error');
 }
 
 function toggleCard(id) {
-  const detailEl  = document.getElementById('card-detail-' + id);
-  const chevronEl = document.getElementById('card-chevron-' + id);
-  if (!detailEl) return;
-  const isOpen = detailEl.style.display !== 'none';
-  if (isOpen) {
-    expandedCards.delete(id);
-    detailEl.style.display = 'none';
-    if (chevronEl) chevronEl.textContent = '▼ Details';
-  } else {
-    expandedCards.add(id);
-    detailEl.style.display = 'block';
-    if (chevronEl) chevronEl.textContent = '▲ Less';
-  }
+  if (expandedCards.has(id)) expandedCards.delete(id); else expandedCards.add(id);
+  renderTab('cards');
 }
 
 // ── Budget & Goals ─────────────────────────────────────────────────────
@@ -2364,13 +2337,13 @@ function saveBudget() {
   const b = { id: id||DB.uuid(), categoryId:catId, limit, month:budgetMonth, year:budgetYear };
   DB.upsertBudget(b);
   closeModal();
-  refreshBudgetUI();
+  renderTab('budget');
   showToast('Budget saved ✓', 'success');
 }
 
 function deleteBudget(id) {
   DB.saveBudgets(DB.getBudgets().filter(b => b.id !== id));
-  refreshBudgetUI();
+  renderTab('budget');
   showToast('Budget deleted', 'error');
 }
 
@@ -2413,7 +2386,7 @@ function replicateBudget() {
   if (existing.length && !confirm(`${months[budgetMonth-1]} ${budgetYear} already has budgets. Overwrite?`)) return;
   source.forEach(b => DB.upsertBudget({ ...b, id:DB.uuid(), month:budgetMonth, year:budgetYear }));
   closeModal();
-  refreshBudgetUI();
+  renderTab('budget');
   showToast(`Replicated ${source.length} budgets ✓`, 'success');
 }
 
@@ -2473,14 +2446,14 @@ function saveGoal() {
   if (id) goals = goals.map(x => x.id===id ? g : x); else goals.push(g);
   DB.saveGoals(goals);
   closeModal();
-  refreshGoalsUI();
+  renderTab('goals');
   showToast(id?'Goal updated ✓':'Goal added ✓','success');
 }
 
 function deleteGoal(id) {
   if (!confirm('Delete this goal?')) return;
   DB.saveGoals(DB.getGoals().filter(g => g.id !== id));
-  refreshGoalsUI();
+  renderTab('goals');
   showToast('Goal deleted','error');
 }
 
@@ -2507,7 +2480,7 @@ function addToGoal(id) {
   txns.unshift({ id:DB.uuid(), type:'expense', amount:roundMoney(amt), categoryId:DB.getCategories().find(c=>c.id==='c19'||c.name==='Savings Goal')?.id||'c19', description:'Savings: '+g.name, date:DB.today(), payment:'net-banking', goalId:id, txnKind:'goal-add', lentTo:'', transferTo:'', lentSettled:false, isSystem:true, createdAt:new Date().toISOString() });
   DB.saveTransactions(txns);
   closeModal();
-  refreshGoalsUI();
+  renderTab('goals');
   showToast('Funds added ✓', 'success');
 }
 
