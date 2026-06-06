@@ -635,7 +635,7 @@ function renderLoans() {
     <div class="kpi-card"><div class="kpi-icon" style="background:#F0FDF4">📉</div><div class="kpi-label">Total Remaining</div><div class="kpi-value text-blue">${DB.fmtINR(totalPrincipal)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
   </div>` : ''}
-  ${buildLoanMonthlySummary(activeLoans, txns)}
+  ${buildLoanMonthlySummary(activeLoans, txns, loans)}
   </div>
 
   <div id="loans-active-wrap">
@@ -741,8 +741,11 @@ function loanCardHTML(l, txns) {
 
 function afterLoans() {}
 
-// Builds the monthly EMI summary card HTML (shared by renderLoans & refreshLoansUI)
-function buildLoanMonthlySummary(activeLoans, txns) {
+// Builds the monthly EMI summary card HTML (shared by renderLoans & refreshLoansUI).
+// allLoans must include BOTH active and completed loans so that a loan paid off
+// this month (last EMI paid → moved to completed) still appears in the Paid tally.
+function buildLoanMonthlySummary(activeLoans, txns, allLoans) {
+  const loansToScan = allLoans || activeLoans;
   const now = new Date();
   const thisMonth = now.getMonth() + 1;
   const thisYear  = now.getFullYear();
@@ -751,7 +754,7 @@ function buildLoanMonthlySummary(activeLoans, txns) {
   let paidCount = 0, pendingCount = 0;
   const pendingLoans = [];
 
-  activeLoans.forEach(l => {
+  loansToScan.forEach(l => {
     const emi      = DB.calcEMI(l.principal, l.rate, l.months);
     const gstRate  = l.gst || 0;
     const paidNums = getLoanPaidEmiNumbers(l, txns);
@@ -827,7 +830,7 @@ function refreshLoansUI() {
     <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Loan Amount</div><div class="kpi-value">${DB.fmtINR(activeLoans.reduce((s,l)=>s+l.principal,0))}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#F0FDF4">📉</div><div class="kpi-label">Total Remaining</div><div class="kpi-value text-blue">${DB.fmtINR(totalPrincipal)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
-  </div>` : '') + buildLoanMonthlySummary(activeLoans, txns);
+  </div>` : '') + buildLoanMonthlySummary(activeLoans, txns, loans);
 
   activeWrap.innerHTML = activeLoans.length === 0 && completedLoans.length === 0
     ? `<div class="empty-state"><div class="empty-icon">🏦</div><p>No active loans. Add your first loan to track EMIs.</p></div>`
