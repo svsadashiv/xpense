@@ -631,7 +631,8 @@ function renderLoans() {
   <div id="loans-kpi-wrap">
   ${activeLoans.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
-    <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Principal</div><div class="kpi-value">${DB.fmtINR(totalPrincipal)}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Loan Amount</div><div class="kpi-value">${DB.fmtINR(activeLoans.reduce((s,l)=>s+l.principal,0))}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#F0FDF4">📉</div><div class="kpi-label">Total Remaining</div><div class="kpi-value text-blue">${DB.fmtINR(totalPrincipal)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
   </div>` : ''}
   ${buildLoanMonthlySummary(activeLoans, txns)}
@@ -697,6 +698,7 @@ function loanCardHTML(l, txns) {
     </div>
     <div class="loan-progress"><div class="loan-fill" style="width:${pct}%"></div></div>
     <div class="loan-stats">
+      <div class="loan-stat"><div class="loan-stat-label">Loan Amount</div><div class="loan-stat-value text-blue">${DB.fmtINR(l.principal)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Monthly EMI</div><div class="loan-stat-value text-blue">${DB.fmtINR(nextEMITotal || emi)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Remaining</div><div class="loan-stat-value text-red">${DB.fmtINR(remaining)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Interest Paid</div><div class="loan-stat-value">${DB.fmtINR(paidInterest)}</div></div>
@@ -822,7 +824,8 @@ function refreshLoansUI() {
 
   kpiWrap.innerHTML = (activeLoans.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
-    <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Principal</div><div class="kpi-value">${DB.fmtINR(totalPrincipal)}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Loan Amount</div><div class="kpi-value">${DB.fmtINR(activeLoans.reduce((s,l)=>s+l.principal,0))}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#F0FDF4">📉</div><div class="kpi-label">Total Remaining</div><div class="kpi-value text-blue">${DB.fmtINR(totalPrincipal)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
   </div>` : '') + buildLoanMonthlySummary(activeLoans, txns);
 
