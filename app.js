@@ -532,6 +532,14 @@ function renderLoans() {
   const completedLoans = loans.filter(l => getLoanPaidEmiNumbers(l, txns).length >= l.months);
 
   const totalPrincipal = activeLoans.reduce((s,l)=>s+l.principal,0);
+  const totalRemaining = activeLoans.reduce((s, l) => {
+    const paid     = getLoanPaidEmiNumbers(l, txns);
+    const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
+    const lastPaidN = paid.length ? Math.max(...paid) : 0;
+    const lastPaidEntry = schedule.find(e => e.n === lastPaidN);
+    const balance  = lastPaidEntry ? lastPaidEntry.balance : l.principal;
+    return s + balance;
+  }, 0);
   const totalEMI = activeLoans.reduce((s, l) => {
     const emi     = DB.calcEMI(l.principal, l.rate, l.months);
     const gstRate = l.gst || 0;
@@ -632,7 +640,7 @@ function renderLoans() {
   ${activeLoans.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
     <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Loan Amount</div><div class="kpi-value">${DB.fmtINR(activeLoans.reduce((s,l)=>s+l.principal,0))}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#F0FDF4">📉</div><div class="kpi-label">Total Remaining</div><div class="kpi-value text-blue">${DB.fmtINR(totalPrincipal)}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#F0FDF4">📉</div><div class="kpi-label">Total Remaining</div><div class="kpi-value text-red">${DB.fmtINR(totalRemaining)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
   </div>` : ''}
   ${buildLoanMonthlySummary(activeLoans, txns, loans)}
@@ -814,6 +822,14 @@ function refreshLoansUI() {
   const completedLoans = loans.filter(l => getLoanPaidEmiNumbers(l, txns).length >= l.months);
 
   const totalPrincipal = activeLoans.reduce((s,l) => s + l.principal, 0);
+  const totalRemaining = activeLoans.reduce((s, l) => {
+    const paid     = getLoanPaidEmiNumbers(l, txns);
+    const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
+    const lastPaidN = paid.length ? Math.max(...paid) : 0;
+    const lastPaidEntry = schedule.find(e => e.n === lastPaidN);
+    const balance  = lastPaidEntry ? lastPaidEntry.balance : l.principal;
+    return s + balance;
+  }, 0);
   const totalEMI = activeLoans.reduce((s, l) => {
     const emi     = DB.calcEMI(l.principal, l.rate, l.months);
     const gstRate = l.gst || 0;
@@ -828,7 +844,7 @@ function refreshLoansUI() {
   kpiWrap.innerHTML = (activeLoans.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
     <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">🏦</div><div class="kpi-label">Total Loan Amount</div><div class="kpi-value">${DB.fmtINR(activeLoans.reduce((s,l)=>s+l.principal,0))}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#F0FDF4">📉</div><div class="kpi-label">Total Remaining</div><div class="kpi-value text-blue">${DB.fmtINR(totalPrincipal)}</div></div>
+    <div class="kpi-card"><div class="kpi-icon" style="background:#F0FDF4">📉</div><div class="kpi-label">Total Remaining</div><div class="kpi-value text-red">${DB.fmtINR(totalRemaining)}</div></div>
     <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">📅</div><div class="kpi-label">Monthly EMI</div><div class="kpi-value text-red">${DB.fmtINR(totalEMI)}</div></div>
   </div>` : '') + buildLoanMonthlySummary(activeLoans, txns, loans);
 
