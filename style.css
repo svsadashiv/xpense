@@ -249,7 +249,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text1); min
 .icon-btn-edit { background: var(--blue-light); color: var(--blue); }
 .icon-btn-del { background: var(--red-light); color: var(--red); }
 .icon-btn:hover { transform: scale(1.1); }
-.section-date { font-size: 12px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; padding: 12px 0 6px; }
+.section-date { font-size: 12px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; padding: 12px 0 6px; display: flex; align-items: center; justify-content: space-between; }
+.section-date-total { font-size: 11px; font-weight: 700; color: var(--red); background: var(--red-light, #FEE2E2); padding: 2px 8px; border-radius: 20px; letter-spacing: 0; text-transform: none; }
 .empty-state { text-align: center; padding: 48px 24px; color: var(--text3); }
 .empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; }
 .empty-state p { font-size: 14px; }

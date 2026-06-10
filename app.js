@@ -414,10 +414,13 @@ function renderTransactions() {
 
   const txnRows = sortedDates.length === 0
     ? '<div class="empty-state"><div class="empty-icon">🔍</div><p>No transactions found</p></div>'
-    : sortedDates.map(date =>
-        '<div class="section-date">'+formatDateHeader(date)+'</div>' +
-        '<div class="txn-list">'+groups[date].map(t => txnRowHTML(t, cats, true)).join('')+'</div>'
-      ).join('');
+    : sortedDates.map(date => {
+        const dayTxns   = groups[date];
+        const dayExpense = dayTxns.filter(t => t.type === 'expense' || t.type === 'transfer').reduce((s,t) => s+t.amount, 0);
+        const daySuffix  = dayExpense > 0 ? '<span class="section-date-total">−'+DB.fmtINR(dayExpense)+'</span>' : '';
+        return '<div class="section-date">'+formatDateHeader(date)+daySuffix+'</div>' +
+               '<div class="txn-list">'+dayTxns.map(t => txnRowHTML(t, cats, true)).join('')+'</div>';
+      }).join('');
 
   const lentBadge     = lent > 0 ? '<div class="badge badge-orange" style="padding:6px 12px">🤝 Lent (period) '+DB.fmtINR(lent)+'</div>' : '';
   const pendingBadge  = allTimePending > 0 ? '<div class="badge badge-orange" style="padding:6px 12px;background:#FEF3C7;color:#B45309">⏳ Pending (all time) '+DB.fmtINR(allTimePending)+'</div>' : '';
@@ -504,10 +507,13 @@ function afterTransactions() {
       const sortedDates = Object.keys(groups).sort((a,b) => b.localeCompare(a));
       const rowsHTML = sortedDates.length === 0
         ? '<div class="empty-state"><div class="empty-icon">🔍</div><p>No transactions found</p></div>'
-        : sortedDates.map(date =>
-            '<div class="section-date">'+formatDateHeader(date)+'</div>' +
-            '<div class="txn-list">'+groups[date].map(t => txnRowHTML(t, cats, true)).join('')+'</div>'
-          ).join('');
+        : sortedDates.map(date => {
+            const dayTxns    = groups[date];
+            const dayExpense = dayTxns.filter(t => t.type === 'expense' || t.type === 'transfer').reduce((s,t) => s+t.amount, 0);
+            const daySuffix  = dayExpense > 0 ? '<span class="section-date-total">−'+DB.fmtINR(dayExpense)+'</span>' : '';
+            return '<div class="section-date">'+formatDateHeader(date)+daySuffix+'</div>' +
+                   '<div class="txn-list">'+dayTxns.map(t => txnRowHTML(t, cats, true)).join('')+'</div>';
+          }).join('');
       const rowsContainer = document.getElementById('txn-rows-container');
       if (rowsContainer) rowsContainer.innerHTML = rowsHTML;
     });
