@@ -83,4 +83,3 @@ XpenseWeb/
 - The PIN is stored as a simple hash (not a cryptographic hash) — it is a convenience lock, not a security guarantee.
 - Use **Export Full Backup JSON** regularly to avoid data loss.
 
----
