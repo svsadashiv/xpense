@@ -1340,10 +1340,13 @@ function refreshTransactionsUI() {
   const sortedDates = Object.keys(groups).sort((a,b) => b.localeCompare(a));
   rowsContainer.innerHTML = sortedDates.length === 0
     ? '<div class="empty-state"><div class="empty-icon">🔍</div><p>No transactions found</p></div>'
-    : sortedDates.map(date =>
-        '<div class="section-date">'+formatDateHeader(date)+'</div>' +
-        '<div class="txn-list">'+groups[date].map(t => txnRowHTML(t, cats, true)).join('')+'</div>'
-      ).join('');
+    : sortedDates.map(date => {
+        const dayTxns    = groups[date];
+        const dayExpense = dayTxns.filter(t => t.type === 'expense' || t.type === 'transfer').reduce((s,t) => s+t.amount, 0);
+        const daySuffix  = dayExpense > 0 ? '<span class="section-date-total">−'+DB.fmtINR(dayExpense)+'</span>' : '';
+        return '<div class="section-date">'+formatDateHeader(date)+daySuffix+'</div>' +
+               '<div class="txn-list">'+dayTxns.map(t => txnRowHTML(t, cats, true)).join('')+'</div>';
+      }).join('');
 }
 function renderGoals() {
   const goals = DB.getGoals();
