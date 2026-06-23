@@ -949,7 +949,7 @@ function cardCurrentCycleDates(c) {
 // ── Cards ──────────────────────────────────────────────────────────────
 function renderCards() {
   const cats = DB.getCategories();
-  const cards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
+  const cards = sortCardsByBillDate(cardsWithDue(DB.getCards(), DB.getTransactions(), cats));
   const totalStatementDue = cards.reduce((s,c) => s + (c._statementDue||0), 0);
   const totalOutstanding   = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
   const totalLimit         = cards.reduce((s,c) => s + (c.limit||0), 0);
@@ -1266,7 +1266,7 @@ function refreshCardsUI() {
   const listWrap = document.getElementById('cards-list-wrap');
   if (!kpiWrap || !listWrap) { renderTab('cards'); return; }
   const cats             = DB.getCategories();
-  const cards            = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
+  const cards            = sortCardsByBillDate(cardsWithDue(DB.getCards(), DB.getTransactions(), cats));
   const totalStatementDue = cards.reduce((s,c) => s + (c._statementDue||0), 0);
   const totalOutstanding  = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
   const totalLimit        = cards.reduce((s,c) => s + (c.limit||0), 0);
@@ -1766,6 +1766,52 @@ function cardsWithDue(cards, txns, cats) {
       _dueDate:         dueDate,
       _overdue:         bal.overdue,
     };
+  });
+}
+
+// Returns the next upcoming bill date (always in the future) for a card.
+// Used for sorting cards that have no pending statement due.
+function nextUpcomingBillDate(c) {
+  if (!c.billDay || c.billDay < 1 || c.billDay > 31) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const ty = today.getFullYear(), tm = today.getMonth(), td = today.getDate();
+  // Try this month's bill date
+  const thisMonthBill = _clampedDate(ty, tm, c.billDay);
+  if (thisMonthBill >= today) return thisMonthBill;
+  // Already passed this month — return next month's
+  const nm = tm + 1 > 11 ? 0 : tm + 1;
+  const ny = tm + 1 > 11 ? ty + 1 : ty;
+  return _clampedDate(ny, nm, c.billDay);
+}
+
+// Sort rules (in priority order):
+//   1. Cards with an unpaid statement due (statementDue > 0) come first,
+//      sorted by due date ascending (most overdue / soonest deadline first).
+//   2. Remaining cards sort by their next upcoming bill date ascending.
+//   3. Cards with no bill day configured go last.
+function sortCardsByBillDate(cards) {
+  return [...cards].sort((a, b) => {
+    const aDue = (a._statementDue || 0) > 0;
+    const bDue = (b._statementDue || 0) > 0;
+
+    // Both have pending statement dues → sort by due date (earliest first)
+    if (aDue && bDue) {
+      const aD = a._dueDate ? new Date(a._dueDate).getTime() : Infinity;
+      const bD = b._dueDate ? new Date(b._dueDate).getTime() : Infinity;
+      return aD - bD;
+    }
+
+    // Only one has a pending due → it goes first
+    if (aDue) return -1;
+    if (bDue) return 1;
+
+    // Neither has pending due → sort by next upcoming bill date
+    const aNext = nextUpcomingBillDate(a);
+    const bNext = nextUpcomingBillDate(b);
+    if (!aNext && !bNext) return 0;
+    if (!aNext) return 1;
+    if (!bNext) return -1;
+    return aNext - bNext;
   });
 }
 function normText(s) {
