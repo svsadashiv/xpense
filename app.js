@@ -557,7 +557,14 @@ function renderLoans() {
     return s + emi + gst;
   }, 0);
 
-  // ── This month's EMI summary ───────────────────────────────────────────
+  const totalPaidAcrossLoans = activeLoans.reduce((s, l) => {
+    const emi      = DB.calcEMI(l.principal, l.rate, l.months);
+    const gstRate  = l.gst || 0;
+    const paid     = getLoanPaidEmiNumbers(l, txns);
+    const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
+    const paidGST  = paid.reduce((gs, n) => { const e = schedule.find(x=>x.n===n); return gs + ((e?.interest||0) * gstRate / 100); }, 0);
+    return s + emi * paid.length + paidGST;
+  }, 0);
   const now = new Date();
   const thisMonth = now.getMonth() + 1;
   const thisYear  = now.getFullYear();
@@ -620,8 +627,11 @@ function renderLoans() {
     </div>` : ''}
   </div>` : '';
 
+  // When all loans are completed, default the list to expanded
+  const allRepaid = activeLoans.length === 0 && completedLoans.length > 0;
+
   const completedSection = completedLoans.length ? `
-  <div style="margin-top:24px">
+  <div id="completed-loans-section" style="margin-top:${activeLoans.length > 0 ? '24px' : '0'}">
     <button
       class="btn btn-secondary"
       style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;font-weight:600"
@@ -629,9 +639,9 @@ function renderLoans() {
       id="completed-loans-btn"
     >
       <span>✅ Completed Loans (${completedLoans.length})</span>
-      <span id="completed-loans-chevron" style="font-size:14px;transition:transform .2s">▼</span>
+      <span id="completed-loans-chevron" style="font-size:14px;transition:transform .2s${allRepaid ? ';transform:rotate(180deg)' : ''}">▼</span>
     </button>
-    <div id="completed-loans-list" style="display:none;margin-top:12px">
+    <div id="completed-loans-list" style="display:${allRepaid ? 'block' : 'none'};margin-top:12px">
       ${completedLoans.map(l => loanCardHTML(l, txns)).join('')}
     </div>
   </div>` : '';
@@ -656,7 +666,11 @@ function renderLoans() {
   ${activeLoans.length === 0 && completedLoans.length === 0
     ? `<div class="empty-state"><div class="empty-icon">🏦</div><p>No active loans. Add your first loan to track EMIs.</p></div>`
     : activeLoans.length === 0
-      ? `<div class="empty-state"><div class="empty-icon">🎉</div><p>All loans repaid!</p></div>`
+      ? `<div class="card" style="text-align:center;padding:28px 20px;margin-bottom:20px;background:linear-gradient(135deg,#F0FDF4,#DCFCE7);border:1.5px solid #86EFAC">
+           <div style="font-size:36px;margin-bottom:10px">🎉</div>
+           <div style="font-size:17px;font-weight:700;color:#15803D;margin-bottom:4px">All Loans Repaid!</div>
+           <div style="font-size:13px;color:#166534">Great work — you're completely debt free.</div>
+         </div>`
       : activeLoans.map(l => loanCardHTML(l, txns)).join('')}
   </div>
 
@@ -684,6 +698,10 @@ function loanCardHTML(l, txns) {
   const paidGST = paid.reduce((s, n) => { const e = schedule.find(x=>x.n===n); return s + ((e?.interest||0) * gstRate / 100); }, 0);
   const totalGST = schedule.reduce((s, e) => s + (e.interest * gstRate / 100), 0);
   const remaining = nextEMI ? schedule.find(s=>s.n===paid.length)?.balance || l.principal : 0;
+  // Total amount actually paid so far = (EMI × paidCount) + GST on paid EMIs
+  const totalAmountPaid = emi * paid.length + paidGST;
+  // Total amount payable over full loan tenure (principal + all interest + all GST)
+  const totalPayableWithGST = totalPayable + totalGST;
 
   // Next EMI GST
   const nextEMIGST = nextEMI ? (nextEMI.interest * gstRate / 100) : 0;
@@ -714,13 +732,15 @@ function loanCardHTML(l, txns) {
     <div class="loan-stats">
       <div class="loan-stat"><div class="loan-stat-label">Loan Amount</div><div class="loan-stat-value text-blue">${DB.fmtINR(l.principal)}</div></div>
       <div class="loan-stat"><div class="loan-stat-label">Monthly EMI</div><div class="loan-stat-value text-blue">${DB.fmtINR(nextEMITotal || emi)}</div></div>
-      <div class="loan-stat"><div class="loan-stat-label">Remaining</div><div class="loan-stat-value text-red">${DB.fmtINR(remaining)}</div></div>
+      ${!nextEMI ? '' : `<div class="loan-stat"><div class="loan-stat-label">Remaining</div><div class="loan-stat-value text-red">${DB.fmtINR(remaining)}</div></div>`}
       <div class="loan-stat"><div class="loan-stat-label">Interest Paid</div><div class="loan-stat-value">${DB.fmtINR(paidInterest)}</div></div>
-      <div class="loan-stat"><div class="loan-stat-label">Total Interest</div><div class="loan-stat-value text-orange">${DB.fmtINR(totalInterest)}</div></div>
+      ${!nextEMI ? '' : `<div class="loan-stat"><div class="loan-stat-label">Total Interest</div><div class="loan-stat-value text-orange">${DB.fmtINR(totalInterest)}</div></div>`}
       ${gstRate > 0 ? `
       <div class="loan-stat"><div class="loan-stat-label">GST Paid</div><div class="loan-stat-value text-orange">${DB.fmtINR(paidGST)}</div></div>
-      <div class="loan-stat"><div class="loan-stat-label">Total GST</div><div class="loan-stat-value text-orange">${DB.fmtINR(totalGST)}</div></div>
+      ${!nextEMI ? '' : `<div class="loan-stat"><div class="loan-stat-label">Total GST</div><div class="loan-stat-value text-orange">${DB.fmtINR(totalGST)}</div></div>`}
       ` : ''}
+      <div class="loan-stat"><div class="loan-stat-label">Total Paid</div><div class="loan-stat-value text-blue">${DB.fmtINR(totalAmountPaid)}</div></div>
+      ${!nextEMI ? '' : `<div class="loan-stat"><div class="loan-stat-label">Total Payable</div><div class="loan-stat-value text-blue">${DB.fmtINR(totalPayableWithGST)}</div></div>`}
     </div>
     ${nextEMI ? `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:10px 14px;background:var(--blue-light);border-radius:8px">
@@ -747,6 +767,16 @@ function loanCardHTML(l, txns) {
             </tr>`;
             }).join('')}
           </tbody>
+          <tfoot>
+            <tr style="font-weight:700;background:var(--bg);border-top:2px solid var(--border)">
+              <td colspan="2" style="font-weight:700">Total</td>
+              <td>${DB.fmtINR(emi * l.months)}</td>
+              <td>${DB.fmtINR(l.principal)}</td>
+              <td>${DB.fmtINR(totalInterest)}</td>
+              ${gstRate > 0 ? `<td style="color:var(--orange)">${DB.fmtINR(totalGST)}</td><td style="font-weight:700">${DB.fmtINR(totalPayableWithGST)}</td>` : ''}
+              <td>—</td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
@@ -845,6 +875,15 @@ function refreshLoansUI() {
     const nextEMI  = schedule.find(e => !paid.includes(e.n));
     const gst      = nextEMI ? (nextEMI.interest * gstRate / 100) : 0;
     return s + emi + gst;
+  }, 0);
+
+  const totalPaidAcrossLoans = activeLoans.reduce((s, l) => {
+    const emi      = DB.calcEMI(l.principal, l.rate, l.months);
+    const gstRate  = l.gst || 0;
+    const paid     = getLoanPaidEmiNumbers(l, txns);
+    const schedule = DB.amortSchedule(l.principal, l.rate, l.months, l.startDate);
+    const paidGST  = paid.reduce((gs, n) => { const e = schedule.find(x=>x.n===n); return gs + ((e?.interest||0) * gstRate / 100); }, 0);
+    return s + emi * paid.length + paidGST;
   }, 0);
 
   kpiWrap.innerHTML = (activeLoans.length ? `
