@@ -17,6 +17,7 @@ let txnPayment      = null;
 let budgetMonth     = new Date().getMonth() + 1;
 let budgetYear      = new Date().getFullYear();
 let expandedCards   = new Set();
+let openCardMenuId  = null; // id of the card whose kebab menu is currently open (only one at a time)
 let drillCat        = null;
 let charts          = {};
 let dashTrendMonths = 6;  // 6 or 12
@@ -987,19 +988,48 @@ function cardCurrentCycleDates(c) {
 
 // ── Cards ──────────────────────────────────────────────────────────────
 function renderCards() {
-  const cats = DB.getCategories();
-  const cards = sortCardsByBillDate(cardsWithDue(DB.getCards(), DB.getTransactions(), cats));
-  const totalStatementDue = cards.reduce((s,c) => s + (c._statementDue||0), 0);
-  const totalOutstanding   = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
-  const totalLimit         = cards.reduce((s,c) => s + (c.limit||0), 0);
-  const today = new Date(); today.setHours(0,0,0,0);
-  const overdueCards       = cards.filter(c => c._overdue);
-  const totalUtil          = totalLimit > 0 ? Math.min((totalOutstanding / totalLimit) * 100, 100) : 0;
   return `
   <div class="page-header">
     <div><div class="page-title">Credit Cards</div></div>
     <button class="btn btn-primary" onclick="openAddCard()">+ Add Card</button>
   </div>
+  <div id="cards-page-body">${cardsPageBodyHTML()}</div>`;
+}
+
+// Renders the KPI strip + active list + collapsible closed-cards section.
+// Pulled out on its own so refreshCardsUI() can patch just this region
+// (no scroll jump) whenever a card is added, edited, paid, or (re)closed.
+function cardsPageBodyHTML() {
+  const cats = DB.getCategories();
+  const allCards   = sortCardsByBillDate(cardsWithDue(DB.getCards(), DB.getTransactions(), cats));
+  const cards       = allCards.filter(c => c.status !== 'closed'); // active only — drives KPIs & totals
+  const closedCards = allCards.filter(c => c.status === 'closed');
+  const totalStatementDue = cards.reduce((s,c) => s + (c._statementDue||0), 0);
+  const totalOutstanding   = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
+  const totalLimit         = cards.reduce((s,c) => s + (c.limit||0), 0);
+  const overdueCards       = cards.filter(c => c._overdue);
+  const totalUtil          = totalLimit > 0 ? Math.min((totalOutstanding / totalLimit) * 100, 100) : 0;
+
+  // When every card has been closed, default the closed list to expanded
+  const allClosed = cards.length === 0 && closedCards.length > 0;
+
+  const closedSection = closedCards.length ? `
+  <div id="closed-cards-section" style="margin-top:${cards.length > 0 ? '24px' : '0'}">
+    <button
+      class="btn btn-secondary"
+      style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;font-weight:600"
+      onclick="toggleClosedCards()"
+      id="closed-cards-btn"
+    >
+      <span>🔒 Closed Cards (${closedCards.length})</span>
+      <span id="closed-cards-chevron" style="font-size:14px;transition:transform .2s${allClosed ? ';transform:rotate(180deg)' : ''}">▼</span>
+    </button>
+    <div id="closed-cards-list" class="cards-masonry" style="display:${allClosed ? 'block' : 'none'};margin-top:12px">
+      ${closedCards.map(c => creditCardHTML(c)).join('')}
+    </div>
+  </div>` : '';
+
+  return `
   <div id="cards-kpi-wrap">
   ${cards.length ? `
   <div class="kpi-grid" style="margin-bottom:24px">
@@ -1011,10 +1041,21 @@ function renderCards() {
     ${overdueCards.length ? `<div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">⚠️</div><div class="kpi-label">Overdue Cards</div><div class="kpi-value text-orange">${overdueCards.length}</div></div>` : ''}
   </div>` : ''}
   </div>
-  <div id="cards-list-wrap">
-  ${cards.length === 0 ? `<div class="empty-state"><div class="empty-icon">💳</div><p>No credit cards added yet.</p></div>` :
+  <div id="cards-list-wrap" class="${cards.length > 0 ? 'cards-masonry' : ''}">
+  ${cards.length === 0 && closedCards.length === 0 ? `<div class="empty-state" style="width:100%"><div class="empty-icon">💳</div><p>No credit cards added yet.</p></div>` :
+    cards.length === 0 ? `<div class="card" style="text-align:center;padding:24px 20px;color:var(--text3);width:100%"><div style="font-size:32px;margin-bottom:8px">💳</div><p>No active cards — check Closed Cards below.</p></div>` :
     cards.map(c => creditCardHTML(c)).join('')}
-  </div>`;
+  </div>
+  ${closedSection}`;
+}
+
+function toggleClosedCards() {
+  const list    = document.getElementById('closed-cards-list');
+  const chevron = document.getElementById('closed-cards-chevron');
+  if (!list) return;
+  const isHidden = list.style.display === 'none';
+  list.style.display      = isHidden ? 'block' : 'none';
+  chevron.style.transform = isHidden ? 'rotate(180deg)' : '';
 }
 
 function creditCardHTML(c) {
@@ -1027,6 +1068,7 @@ function creditCardHTML(c) {
   const util      = c.limit > 0 ? Math.min((totalOutstanding / c.limit) * 100, 100) : 0;
   const utilColor = util < 30 ? 'var(--green)' : util < 70 ? 'var(--orange)' : 'var(--red)';
   const isOpen    = expandedCards.has(c.id);
+  const isClosed  = c.status === 'closed';
 
   const billDate = c._billDate instanceof Date ? c._billDate : (c._billDate ? new Date(c._billDate) : null);
   const dueDate  = c._dueDate  instanceof Date ? c._dueDate  : (c._dueDate  ? new Date(c._dueDate)  : null);
@@ -1053,43 +1095,36 @@ function creditCardHTML(c) {
   const hasCycleInfo = !!(c.billDay && c.dueDay);
 
   const detail = `
-    <div id="card-detail-${c.id}" style="display:${isOpen ? 'block' : 'none'};padding:16px;border-top:1px solid var(--border)">
+    <div id="card-detail-${c.id}" class="cc-detail" style="display:${isOpen ? 'block' : 'none'};border-radius:0 0 14px 14px">
 
       ${hasCycleInfo ? `
-      <!-- Statement breakdown — shown only when bill/due days are configured -->
-      <div style="background:var(--bg);border-radius:10px;padding:12px;margin-bottom:14px">
-        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Current Cycle</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-          <div>
-            <div style="font-size:11px;color:var(--text3);margin-bottom:3px">📄 Stmt Due</div>
-            <div style="font-size:15px;font-weight:700;color:${statementDue > 0 ? 'var(--red)' : 'var(--green)'}">${DB.fmtINR(statementDue)}</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">Pay by ${cardStripDue}</div>
+      <!-- Statement breakdown — shown only when bill/due days are configured.
+           "Total outstanding" isn't repeated here — it's the Outstanding
+           figure in the row below, so we don't show the same number twice. -->
+      <div class="cc-cycle-band">
+        <div class="cc-section-label">Current Cycle</div>
+        <div class="cc-stat-grid-2">
+          <div class="card-stat">
+            <div class="cc-mini-label">📄 Stmt Due</div>
+            <div class="cc-mini-value" style="color:${statementDue > 0 ? 'var(--red)' : 'var(--green)'}">${DB.fmtINR(statementDue)}</div>
+            <div class="card-stat-sub">Pay by ${cardStripDue}</div>
           </div>
-          <div>
-            <div style="font-size:11px;color:var(--text3);margin-bottom:3px">🛍️ New Spend</div>
-            <div style="font-size:15px;font-weight:700;color:var(--orange)">${DB.fmtINR(newSpending)}</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">Since ${cardStripBill}</div>
-          </div>
-          <div>
-            <div style="font-size:11px;color:var(--text3);margin-bottom:3px">💳 Total</div>
-            <div style="font-size:15px;font-weight:700;color:var(--text1)">${DB.fmtINR(totalOutstanding)}</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">Outstanding</div>
+          <div class="card-stat">
+            <div class="cc-mini-label">🛍️ New Spend</div>
+            <div class="cc-mini-value" style="color:var(--orange)">${DB.fmtINR(newSpending)}</div>
+            <div class="card-stat-sub">Since ${cardStripBill}</div>
           </div>
         </div>
         ${statementDue === 0 && totalOutstanding > 0 ? `
-        <div style="margin-top:8px;padding:6px 10px;background:#D1FAE5;border-radius:6px;font-size:12px;color:var(--green);font-weight:600">
-          ✓ Last statement cleared — new cycle spending only
-        </div>` : ''}
+        <div class="cc-callout" style="background:#D1FAE5;color:var(--green)">✓ Last statement cleared — new cycle spending only</div>` : ''}
         ${overdue ? `
-        <div style="margin-top:8px;padding:6px 10px;background:#FEE4E2;border-radius:6px;font-size:12px;color:var(--red);font-weight:600">
-          ⚠ Payment overdue — Min due ${DB.fmtINR(c.minPayment||0)}
-        </div>` : ''}
+        <div class="cc-callout" style="background:#FEE4E2;color:var(--red)">⚠ Payment overdue — Min due ${DB.fmtINR(c.minPayment||0)}</div>` : ''}
       </div>` : ''}
 
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
-        <div><div class="card-stat-label">Outstanding</div><div class="card-stat-value text-red">${DB.fmtFull(totalOutstanding)}</div></div>
-        <div><div class="card-stat-label">Limit</div><div class="card-stat-value">${DB.fmtFull(c.limit)}</div></div>
-        <div><div class="card-stat-label">Available</div><div class="card-stat-value text-green">${DB.fmtFull(c.limit - totalOutstanding)}</div></div>
+      <div class="cc-stat-grid-3" style="margin-bottom:12px">
+        <div class="card-stat"><div class="card-stat-label">Outstanding</div><div class="card-stat-value text-red">${DB.fmtFull(totalOutstanding)}</div></div>
+        <div class="card-stat"><div class="card-stat-label">Limit</div><div class="card-stat-value">${DB.fmtFull(c.limit)}</div></div>
+        <div class="card-stat"><div class="card-stat-label">Available</div><div class="card-stat-value text-green">${DB.fmtFull(c.limit - totalOutstanding)}</div></div>
       </div>
       <div style="margin-bottom:12px">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text3);margin-bottom:4px">
@@ -1097,44 +1132,46 @@ function creditCardHTML(c) {
         </div>
         <div class="util-bar"><div class="util-fill" style="width:${util}%;background:${utilColor}"></div></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-        <div style="background:var(--bg);border-radius:8px;padding:10px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:2px">🗓️ Bill Date</div>
+      <div class="cc-info-grid" style="margin-bottom:12px">
+        <div class="cc-info-box">
+          <div class="cc-mini-label">🗓️ Bill Date</div>
           <div style="font-size:13px;font-weight:600;color:var(--text1)">${c.billDay ? fmtCardDay(c.billDay) + ' of month' : '—'}</div>
-          <div style="font-size:12px;color:var(--blue);margin-top:2px">${billDateDisplay}</div>
+          <div class="card-stat-sub" style="color:var(--blue)">${billDateDisplay}</div>
         </div>
-        <div style="background:var(--bg);border-radius:8px;padding:10px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:2px">💳 Payment Due</div>
+        <div class="cc-info-box">
+          <div class="cc-mini-label">💳 Payment Due</div>
           <div style="font-size:13px;font-weight:600;color:var(--text1)">${c.dueDay ? fmtCardDay(c.dueDay) + ' of month' : '—'}</div>
-          <div style="font-size:12px;color:${overdue ? 'var(--red)' : 'var(--orange)'};margin-top:2px">${dueDateDisplay}</div>
+          <div class="card-stat-sub" style="color:${overdue ? 'var(--red)' : 'var(--orange)'}">${dueDateDisplay}</div>
         </div>
       </div>
-      <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
+      <div style="font-size:12px;color:var(--text3);${!isClosed ? 'margin-bottom:12px' : ''}">
         Min ${DB.fmtFull(c.minPayment||0)} &nbsp;·&nbsp; ${c.rate||36}% p.a.
       </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-primary" style="flex:1" onclick="openSettleCard('${c.id}')">💳 Pay Now</button>
-        <button class="btn btn-secondary" onclick="openEditCard('${c.id}')">✏️</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteCard('${c.id}')">🗑️</button>
-      </div>
+
+      ${!isClosed ? `<button class="btn btn-primary" style="width:100%" onclick="openSettleCard('${c.id}')">💳 Pay Now</button>` : ''}
     </div>`;
 
   return `
-  <div style="margin-bottom:16px;border-radius:14px;overflow:hidden;box-shadow:var(--shadow)">
-    <div onclick="toggleCard('${c.id}')" style="background:linear-gradient(135deg,${c.color},${c.color}bb);padding:20px;color:white;cursor:pointer;position:relative;overflow:hidden">
+  <div class="credit-card-tile" style="position:relative;border-radius:14px;box-shadow:var(--shadow);${isClosed ? 'opacity:.72' : ''}">
+    <div onclick="toggleCard('${c.id}')" style="background:linear-gradient(135deg,${c.color},${c.color}bb);padding:20px;color:white;cursor:pointer;position:relative;overflow:hidden;border-radius:${isOpen ? '14px 14px 0 0' : '14px'};${isClosed ? 'filter:grayscale(.65)' : ''}">
       <div style="position:absolute;top:-20px;right:-20px;width:120px;height:120px;border-radius:50%;background:rgba(255,255,255,.08)"></div>
       <div style="position:relative">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
           <div>
-            <div style="font-size:14px;font-weight:600;opacity:.9">${escapeHTML(c.bank)}</div>
+            <div style="font-size:14px;font-weight:600;opacity:.9;display:flex;align-items:center;gap:6px">
+              ${escapeHTML(c.bank)}
+              ${isClosed ? '<span style="background:rgba(0,0,0,.35);padding:2px 8px;border-radius:8px;font-size:10px;font-weight:700;letter-spacing:.5px">🔒 CLOSED</span>' : ''}
+            </div>
             <div style="font-family:'DM Mono',monospace;font-size:15px;margin-top:8px;letter-spacing:2px">•••• •••• •••• ${escapeHTML(c.last4)}</div>
             <div style="font-size:13px;opacity:.75;margin-top:3px">${escapeHTML(c.name)}</div>
           </div>
-          <div style="text-align:right">
-            ${overdue ? '<div style="background:rgba(255,200,0,.3);padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;margin-bottom:6px">⚠ OVERDUE</div>' : ''}
-            <div style="font-size:11px;opacity:.7">${faceLabel}</div>
-            <div style="font-size:18px;font-weight:700">${DB.fmtINR(faceAmount)}</div>
-            ${hasCycleInfo && newSpending > 0 && statementDue > 0 ? `<div style="font-size:11px;opacity:.7;margin-top:2px">+${DB.fmtINR(newSpending)} new</div>` : ''}
+          <div style="display:flex;align-items:flex-start;gap:8px">
+            <div class="cc-face-amount" style="text-align:right;padding-right:36px">
+              ${overdue && !isClosed ? '<div style="background:rgba(255,200,0,.3);padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;margin-bottom:6px">⚠ OVERDUE</div>' : ''}
+              <div style="font-size:11px;opacity:.7">${faceLabel}</div>
+              <div style="font-size:18px;font-weight:700">${DB.fmtINR(faceAmount)}</div>
+              ${hasCycleInfo && newSpending > 0 && statementDue > 0 ? `<div style="font-size:11px;opacity:.7;margin-top:2px">+${DB.fmtINR(newSpending)} new</div>` : ''}
+            </div>
           </div>
         </div>
         <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px;flex-wrap:wrap">
@@ -1146,10 +1183,22 @@ function creditCardHTML(c) {
         <div style="height:4px;background:rgba(255,255,255,.25);border-radius:2px;overflow:hidden">
           <div style="height:100%;background:white;width:${util.toFixed(1)}%;border-radius:2px;opacity:.85"></div>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+        <div class="cc-face-footer" style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
           <div id="card-chevron-${c.id}" style="font-size:11px;opacity:.6">${isOpen ? '▲ Less' : '▼ Details'}</div>
-          ${faceAmount > 0 ? `<button onclick="event.stopPropagation();openSettleCard('${c.id}')" style="background:rgba(255,255,255,0.25);border:1px solid rgba(255,255,255,0.5);color:white;padding:5px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">💳 Pay Now</button>` : ''}
+          ${faceAmount > 0 && !isClosed ? `<button onclick="event.stopPropagation();openSettleCard('${c.id}')" style="background:rgba(255,255,255,0.25);border:1px solid rgba(255,255,255,0.5);color:white;padding:5px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;">💳 Pay Now</button>` : ''}
         </div>
+      </div>
+    </div>
+    <!-- Kebab menu sits OUTSIDE the header's overflow:hidden (needed to clip
+         the decorative circle), positioned on top of it, so the dropdown can
+         extend past the collapsed card's edge without being clipped. -->
+    <div class="card-menu-wrap" style="position:absolute;top:20px;right:20px;z-index:5">
+      <button class="card-menu-btn" onclick="toggleCardMenu('${c.id}', event)" aria-label="Card options">⋮</button>
+      <div class="card-menu" id="card-menu-${c.id}">
+        <button class="card-menu-item" onclick="runCardMenuAction(event, () => openEditCard('${c.id}'))">✏️ Edit Card</button>
+        <button class="card-menu-item" onclick="runCardMenuAction(event, () => toggleCardStatus('${c.id}'))">${isClosed ? '🔓 Reopen Card' : '🔒 Close Card'}</button>
+        <div class="card-menu-divider"></div>
+        <button class="card-menu-item danger" onclick="runCardMenuAction(event, () => deleteCard('${c.id}'))">🗑️ Delete Card</button>
       </div>
     </div>
     ${detail}
@@ -1301,28 +1350,9 @@ function refreshBudgetUI() {
 }
 
 function refreshCardsUI() {
-  const kpiWrap  = document.getElementById('cards-kpi-wrap');
-  const listWrap = document.getElementById('cards-list-wrap');
-  if (!kpiWrap || !listWrap) { renderTab('cards'); return; }
-  const cats             = DB.getCategories();
-  const cards            = sortCardsByBillDate(cardsWithDue(DB.getCards(), DB.getTransactions(), cats));
-  const totalStatementDue = cards.reduce((s,c) => s + (c._statementDue||0), 0);
-  const totalOutstanding  = cards.reduce((s,c) => s + (c.dueBalance||0), 0);
-  const totalLimit        = cards.reduce((s,c) => s + (c.limit||0), 0);
-  const overdueCards      = cards.filter(c => c._overdue);
-  const totalUtil         = totalLimit > 0 ? Math.min((totalOutstanding / totalLimit) * 100, 100) : 0;
-  kpiWrap.innerHTML = cards.length ? `
-  <div class="kpi-grid" style="margin-bottom:24px">
-    <div class="kpi-card"><div class="kpi-icon" style="background:#EEF2FF">💳</div><div class="kpi-label">Total Cards</div><div class="kpi-value">${cards.length}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#FEE4E2">💸</div><div class="kpi-label">Stmt Due</div><div class="kpi-value text-red">${DB.fmtINR(totalStatementDue)}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#FFF7ED">🧾</div><div class="kpi-label">Total Outstanding</div><div class="kpi-value text-orange">${DB.fmtINR(totalOutstanding)}</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">📊</div><div class="kpi-label">Avg Utilization</div><div class="kpi-value text-orange">${totalUtil.toFixed(1)}%</div></div>
-    <div class="kpi-card"><div class="kpi-icon" style="background:#E8F5E9">🏦</div><div class="kpi-label">Total Limit</div><div class="kpi-value text-green">${DB.fmtINR(totalLimit)}</div></div>
-    ${overdueCards.length ? `<div class="kpi-card"><div class="kpi-icon" style="background:#FFF3E0">⚠️</div><div class="kpi-label">Overdue Cards</div><div class="kpi-value text-orange">${overdueCards.length}</div></div>` : ''}
-  </div>` : '';
-  listWrap.innerHTML = cards.length === 0
-    ? `<div class="empty-state"><div class="empty-icon">💳</div><p>No credit cards added yet.</p></div>`
-    : cards.map(c => creditCardHTML(c)).join('');
+  const bodyWrap = document.getElementById('cards-page-body');
+  if (!bodyWrap) { renderTab('cards'); return; }
+  bodyWrap.innerHTML = cardsPageBodyHTML();
 }
 
 function refreshGoalsUI() {
@@ -2439,6 +2469,8 @@ function saveCard() {
   const dueDay  = parseInt(document.getElementById('cc-due-day').value)  || null;
   if (billDay && (billDay < 1 || billDay > 31)) { showToast('Bill day must be 1–31', 'error'); return; }
   if (dueDay  && (dueDay  < 1 || dueDay  > 31)) { showToast('Due day must be 1–31', 'error'); return; }
+  let cards = DB.getCards();
+  const existing = id ? cards.find(c => c.id === id) : null;
   const card = {
     id: id || DB.uuid(), name, bank: document.getElementById('cc-bank').value,
     last4: document.getElementById('cc-last4').value, limit,
@@ -2447,8 +2479,8 @@ function saveCard() {
     rate: parseFloat(document.getElementById('cc-rate').value)||36,
     billDay, dueDay,
     color: document.getElementById('cc-color').value,
+    status: existing?.status === 'closed' ? 'closed' : 'active', // editing never silently reopens a closed card
   };
-  let cards = DB.getCards();
   if (id) cards = cards.map(c => c.id===id ? card : c);
   else cards.push(card);
   DB.saveCards(cards);
@@ -2537,6 +2569,21 @@ function deleteCard(id) {
   showToast('Card deleted', 'error');
 }
 
+// Marks a card active/closed — just like a bank lets you close a card without
+// deleting its history. Closed cards drop out of KPI totals but stay visible
+// (and payable) in a collapsed "Closed Cards" section.
+function toggleCardStatus(id) {
+  const cards = DB.getCards();
+  const card  = cards.find(c => c.id === id);
+  if (!card) return;
+  const closing = card.status !== 'closed';
+  if (closing && !confirm(`Close ${card.name}? It'll move out of your active totals but you can reopen it anytime.`)) return;
+  card.status = closing ? 'closed' : 'active';
+  DB.saveCards(cards);
+  refreshCardsUI();
+  showToast(closing ? `${card.name} closed` : `${card.name} reactivated ✓`, closing ? '' : 'success');
+}
+
 function toggleCard(id) {
   const detailEl  = document.getElementById('card-detail-' + id);
   const chevronEl = document.getElementById('card-chevron-' + id);
@@ -2551,6 +2598,35 @@ function toggleCard(id) {
     detailEl.style.display = 'block';
     if (chevronEl) chevronEl.textContent = '▲ Less';
   }
+}
+
+// Per-card kebab menu (Edit / Close-Reopen / Delete). Only one open at a
+// time; a single document-level click listener (wired once in Init) closes
+// whichever menu is open when the person clicks anywhere else.
+function toggleCardMenu(id, event) {
+  event.stopPropagation();
+  const menu = document.getElementById('card-menu-' + id);
+  if (!menu) return;
+  const willOpen = menu.style.display !== 'block';
+  closeAllCardMenus();
+  if (willOpen) {
+    menu.style.display = 'block';
+    openCardMenuId = id;
+  }
+}
+
+function closeAllCardMenus() {
+  document.querySelectorAll('.card-menu').forEach(m => m.style.display = 'none');
+  openCardMenuId = null;
+}
+
+// Runs a card-menu action (edit/toggle-status/delete): stops the click from
+// bubbling into the card header's expand/collapse handler, closes the menu,
+// then performs the action.
+function runCardMenuAction(event, fn) {
+  event.stopPropagation();
+  closeAllCardMenus();
+  fn();
 }
 
 // ── Budget & Goals ─────────────────────────────────────────────────────
@@ -2960,6 +3036,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initNav();
   initModal();
   _initAutoLock(); // wire inactivity listeners once
+  document.addEventListener('click', closeAllCardMenus); // close any open card kebab menu on outside click
   if (DB.hasPin()) {
     // PIN exists — show auth screen and wire up numpad
     initAuth();
