@@ -1920,7 +1920,7 @@ function autoLinkTransaction(t, ctx) {
 
   const isCardPayment = out.type === 'expense' && out.payment !== 'credit-card' && ccCatId && out.categoryId === ccCatId;
   if (isCardPayment && !out.creditCardId) {
-    const card = ctx.cards.find(c => {
+    const card = [...ctx.cards].sort((a, b) => (a.status === 'closed') - (b.status === 'closed')).find(c => {
       const last4 = String(c.last4 || '').trim();
       return (last4 && descNorm.includes(last4)) || descNorm.includes(normText(c.name)) || descNorm.includes(normText(c.bank));
     });
@@ -1974,24 +1974,35 @@ function syncPaydownCardGroup() {
 // ── Add/Edit Transaction ───────────────────────────────────────────────
 function openAddTransaction(editId = null) {
   const cats  = DB.getCategories();
-  const cards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
+  const allCards = cardsWithDue(DB.getCards(), DB.getTransactions(), cats);
   const edit  = editId ? DB.getTransactions().find(t => t.id === editId) : null;
   const type  = edit ? edit.type : 'expense';
   const lentSub = edit ? (edit.lentSub || 'lend') : 'lend';
   const catsByType = t => cats.filter(c => c.type === t);
   const paydownSelected = edit && isCreditCardPaydown(edit, cats) ? edit.creditCardId : '';
 
+  // Closed cards shouldn't be offered for new charges. Exceptions, so nothing breaks:
+  //  - the card an edited transaction is already linked to stays listed (otherwise
+  //    editing would silently re-point the transaction at a different card);
+  //  - for paying a card down, a closed card still carrying a balance stays listed,
+  //    since that balance still has to be settled with the bank.
+  const linkedCardId = edit ? edit.creditCardId : '';
+  const cards       = allCards.filter(c => c.status !== 'closed' || c.id === linkedCardId);
+  const paydownCards = allCards.filter(c => c.status !== 'closed' || c.id === linkedCardId || (c.dueBalance || 0) > 0);
+  const noCardsMsg = '<p style="color:var(--orange);font-size:13px">' +
+    (allCards.length ? 'No active cards — reopen one from the Cards tab.' : 'No cards added yet.') + '</p>';
+
   const ccVisible = edit && edit.payment === 'credit-card';
   const ccOpts = cards.length === 0
-    ? '<p style="color:var(--orange);font-size:13px">No cards added yet.</p>'
+    ? noCardsMsg
     : '<select class="form-select" id="txn-card">' +
-        cards.map((c,i) => '<option value="'+c.id+'"'+(edit && edit.payment === 'credit-card' && edit.creditCardId===c.id ? ' selected' : (!edit && i===0 ? ' selected':''))+'>'+c.name+' ('+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+') — Avail: '+DB.fmtINR(c.limit-c.dueBalance)+'</option>').join('') +
+        cards.map((c,i) => '<option value="'+c.id+'"'+(edit && edit.payment === 'credit-card' && edit.creditCardId===c.id ? ' selected' : (!edit && i===0 ? ' selected':''))+'>'+c.name+(c.status==='closed'?' [Closed]':'')+' ('+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+') — Avail: '+DB.fmtINR(c.limit-c.dueBalance)+'</option>').join('') +
       '</select>';
-  const paydownOpts = cards.length === 0
-    ? '<p style="color:var(--orange);font-size:13px">No cards added yet.</p>'
+  const paydownOpts = paydownCards.length === 0
+    ? noCardsMsg
     : '<select class="form-select" id="txn-paydown-card">' +
         '<option value="">— Not paying toward a card —</option>' +
-        cards.map(c => '<option value="'+c.id+'"'+(paydownSelected===c.id?' selected':'')+'>'+c.name+' ('+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+')</option>').join('') +
+        paydownCards.map(c => '<option value="'+c.id+'"'+(paydownSelected===c.id?' selected':'')+'>'+c.name+(c.status==='closed'?' [Closed]':'')+' ('+c.bank+' \u00b7\u00b7\u00b7\u00b7 '+c.last4+')</option>').join('') +
       '</select>';
 
   const body =
