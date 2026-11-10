@@ -1643,7 +1643,7 @@ function renderSettings() {
   </div>
   <div class="settings-section">
     <div class="settings-section-title">About</div>
-    <div class="settings-row"><div class="settings-row-label">Version</div><span class="text-muted">1.0.0</span></div>
+    <div class="settings-row"><div class="settings-row-label">Version</div><span class="text-muted">1.1.0</span></div>
     <div class="settings-row"><div class="settings-row-label">Currency</div><span class="text-muted">INR (₹)</span></div>
   </div>`;
 }
