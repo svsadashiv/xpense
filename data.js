@@ -208,7 +208,7 @@ const DB = {
       budgets:      this.getBudgets(),
       goals:        this.getGoals(),
       exportedAt:   new Date().toISOString(),
-      version:      '1.0',
+      version:      '1.1',
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
